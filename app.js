@@ -1,4 +1,3 @@
-const STORE_KEY = "solvedesk-pro-state-v1";
 const THEME_KEY = "solvedesk-pro-theme";
 const SUPABASE_URL = "https://ktovpehotipivowkffkal.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0b3ZwZWhvdGlwaXdvdmtma2FsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MjYwNTcsImV4cCI6MjA5NzIwMjA1N30.8u7yQxv_pfzv5h9JxORk-PS9gRo7p2_gCSYBiLSLxKk";
@@ -90,17 +89,6 @@ function applyWorkspaceData(data) {
   state.activeRole = payload.activeRole || "manager";
 }
 
-function legacyLocalState() {
-  const saved = localStorage.getItem(STORE_KEY);
-  if (!saved) return null;
-  try {
-    return JSON.parse(saved);
-  } catch {
-    localStorage.removeItem(STORE_KEY);
-    return null;
-  }
-}
-
 async function loadState() {
   if (!supabaseClient || !state.authUser) throw new Error("Supabase não inicializado.");
   const { data, error } = await supabaseClient
@@ -114,11 +102,9 @@ async function loadState() {
   if (data?.data) {
     applyWorkspaceData(data.data);
   } else {
-    applyWorkspaceData(legacyLocalState() || clone(window.SolveDeskSeed));
+    applyWorkspaceData(clone(window.SolveDeskSeed));
     await persistStateNow();
   }
-
-  localStorage.removeItem(STORE_KEY);
   state.workspaceLoaded = true;
 }
 
@@ -198,6 +184,23 @@ function setLoginError(message, active = true) {
   error.classList.toggle("active", active && Boolean(message));
 }
 
+function supabaseErrorMessage(error, fallback = "Erro desconhecido do Supabase.") {
+  if (!error) return fallback;
+  const parts = [
+    error.message,
+    error.error_description,
+    error.details,
+    error.hint,
+    error.code ? `Código: ${error.code}` : ""
+  ].filter(Boolean);
+  return parts.join(" | ") || fallback;
+}
+
+function reportAuthError(error, context = "Erro de autenticação") {
+  console.error(`[Supabase Auth] ${context}`, error);
+  setLoginError(supabaseErrorMessage(error, context));
+}
+
 function unlockApp() {
   document.body.classList.remove("auth-locked");
   document.body.classList.add("auth-ready");
@@ -230,15 +233,24 @@ async function handleLogin(event) {
     const response = mode === "signup"
       ? await supabaseClient.auth.signUp({ email, password })
       : await supabaseClient.auth.signInWithPassword({ email, password });
+    console.info(`[Supabase Auth] ${mode === "signup" ? "signUp" : "signInWithPassword"} response`, response);
     if (response.error) throw response.error;
-    if (mode === "signup" && !response.data.session) {
-      setLoginError("Cadastro criado. Confirme o e-mail se o Supabase solicitar e depois entre.", false);
-      return;
+
+    let authData = response.data;
+    if (mode === "signup" && !authData.session) {
+      const loginAfterSignup = await supabaseClient.auth.signInWithPassword({ email, password });
+      console.info("[Supabase Auth] signInWithPassword after signUp response", loginAfterSignup);
+      if (loginAfterSignup.error) throw loginAfterSignup.error;
+      authData = loginAfterSignup.data;
     }
-    state.authUser = response.data.user;
+
+    if (!authData?.user) throw new Error("Supabase não retornou usuário autenticado.");
+    state.authUser = authData.user;
     form.reset();
     setLoginError("");
     await startApp();
+  } catch (error) {
+    reportAuthError(error, mode === "signup" ? "Erro ao criar acesso" : "Erro ao entrar");
   } finally {
     button.disabled = false;
     button.textContent = mode === "signup" ? "Criar acesso" : "Entrar";
@@ -261,7 +273,7 @@ function bindAuthEvents() {
   });
   $("#loginForm")?.addEventListener("submit", (event) => {
     handleLogin(event).catch((error) => {
-      setLoginError("Não foi possível validar o acesso neste navegador.");
+      reportAuthError(error, "Falha no formulário de autenticação");
     });
   });
   $("#logoutBtn")?.addEventListener("click", () => {
