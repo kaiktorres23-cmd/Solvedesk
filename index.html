@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SolveDesk Pro</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="boot-screen" id="bootScreen" aria-hidden="true">
+      <div class="boot-orbit">
+        <span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <strong>SolveDesk Pro</strong>
+    </div>
+
+    <div class="app-frame">
+      <aside class="sidebar" id="sidebar">
+        <button class="sidebar-toggle icon-button" id="sidebarToggle" type="button" aria-label="Alternar menu">
+          <span class="icon-bars"></span>
+        </button>
+        <a class="brand" href="#dashboard" data-route="dashboard" aria-label="SolveDesk Pro">
+          <span class="brand-orb">SD</span>
+          <span>
+            <strong>SolveDesk Pro</strong>
+            <small>Inteligência operacional</small>
+          </span>
+        </a>
+        <nav class="side-nav" aria-label="Módulos">
+          <button class="nav-item active" type="button" data-route="dashboard"><span data-icon="dashboard"></span><b>Dashboard</b></button>
+          <button class="nav-item" type="button" data-route="problems"><span data-icon="ticket"></span><b>Problemas</b></button>
+          <button class="nav-item" type="button" data-route="knowledge"><span data-icon="book"></span><b>Base</b></button>
+          <button class="nav-item" type="button" data-route="inventory"><span data-icon="monitor"></span><b>Inventário</b></button>
+          <button class="nav-item" type="button" data-route="insights"><span data-icon="spark"></span><b>Insights</b></button>
+          <button class="nav-item" type="button" data-route="reports"><span data-icon="chart"></span><b>Relatórios</b></button>
+          <button class="nav-item" type="button" data-route="users"><span data-icon="users"></span><b>Usuários</b></button>
+          <button class="nav-item" type="button" data-route="settings"><span data-icon="settings"></span><b>Ajustes</b></button>
+        </nav>
+        <div class="role-card">
+          <small>Perfil ativo</small>
+          <select id="roleSelect" aria-label="Perfil ativo"></select>
+          <p id="roleHint"></p>
+        </div>
+      </aside>
+
+      <div class="main-shell">
+        <header class="topbar">
+          <button class="mobile-menu icon-button ripple-btn" id="mobileMenuBtn" type="button" aria-label="Abrir menu">
+            <span class="icon-bars"></span>
+          </button>
+          <label class="global-search">
+            <span data-icon="search"></span>
+            <input id="globalSearch" type="search" placeholder="Buscar problema, cliente, recurso, tag ou solução">
+          </label>
+          <div class="topbar-actions">
+            <button class="ghost-btn ripple-btn" id="quickProblemBtn" type="button"><span data-icon="plus"></span>Novo problema</button>
+            <button class="primary-btn ripple-btn" id="exportIndicatorsBtn" type="button"><span data-icon="excel"></span>Exportar indicadores</button>
+            <button class="theme-btn ripple-btn" id="themeToggle" type="button" aria-label="Alternar tema"><span class="theme-dot"></span></button>
+          </div>
+        </header>
+
+        <main class="view-stack">
+          <section class="view active" id="view-dashboard" data-view="dashboard"></section>
+          <section class="view" id="view-problems" data-view="problems"></section>
+          <section class="view" id="view-knowledge" data-view="knowledge"></section>
+          <section class="view" id="view-inventory" data-view="inventory"></section>
+          <section class="view" id="view-insights" data-view="insights"></section>
+          <section class="view" id="view-reports" data-view="reports"></section>
+          <section class="view" id="view-users" data-view="users"></section>
+          <section class="view" id="view-settings" data-view="settings"></section>
+        </main>
+      </div>
+    </div>
+
+    <div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
+
+    <dialog class="modal large" id="problemModal">
+      <div class="modal-shell">
+        <header class="modal-header">
+          <div>
+            <small>Novo registro</small>
+            <h2>Cadastrar problema</h2>
+          </div>
+          <button class="icon-button ripple-btn" type="button" data-close-modal="problemModal" aria-label="Fechar">×</button>
+        </header>
+        <form id="problemForm" class="form-grid"></form>
+      </div>
+    </dialog>
+
+    <dialog class="modal large" id="problemDetailModal">
+      <div class="modal-shell" id="problemDetailContent"></div>
+    </dialog>
+
+    <dialog class="modal large" id="assetModal">
+      <div class="modal-shell">
+        <header class="modal-header">
+          <div>
+            <small>Inventário de TI</small>
+            <h2>Cadastrar recurso</h2>
+          </div>
+          <button class="icon-button ripple-btn" type="button" data-close-modal="assetModal" aria-label="Fechar">×</button>
+        </header>
+        <form id="assetForm" class="form-grid"></form>
+      </div>
+    </dialog>
+
+    <dialog class="modal large" id="assetDetailModal">
+      <div class="modal-shell" id="assetDetailContent"></div>
+    </dialog>
+
+    <dialog class="modal large" id="userModal">
+      <div class="modal-shell">
+        <header class="modal-header">
+          <div>
+            <small>Usuários e perfis</small>
+            <h2>Cadastrar usuário</h2>
+          </div>
+          <button class="icon-button ripple-btn" type="button" data-close-modal="userModal" aria-label="Fechar">×</button>
+        </header>
+        <form id="userForm" class="form-grid"></form>
+      </div>
+    </dialog>
+
+    <dialog class="modal export-modal" id="exportModal">
+      <div class="modal-shell">
+        <header class="modal-header">
+          <div>
+            <small>Exportação Excel</small>
+            <h2>Exportar indicadores</h2>
+          </div>
+          <button class="icon-button ripple-btn" type="button" data-close-modal="exportModal" aria-label="Fechar">×</button>
+        </header>
+        <div class="export-layout">
+          <div class="export-options" id="exportOptions"></div>
+          <div class="export-animation" id="exportAnimation">
+            <div class="excel-core"><span data-icon="excel"></span></div>
+            <span>Problemas</span>
+            <span>Soluções</span>
+            <span>Recursos</span>
+            <span>Status</span>
+            <span>Gráficos</span>
+            <span>Indicadores</span>
+          </div>
+        </div>
+        <footer class="modal-actions">
+          <button class="ghost-btn ripple-btn" type="button" data-close-modal="exportModal">Cancelar</button>
+          <button class="primary-btn ripple-btn" id="runExportBtn" type="button"><span data-icon="excel"></span>Gerar .xlsx</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <dialog class="modal confirm-modal" id="confirmDeleteModal">
+      <div class="modal-shell">
+        <header class="modal-header">
+          <div>
+            <small>Excluir problema</small>
+            <h2>Confirmar exclusão</h2>
+          </div>
+          <button class="icon-button ripple-btn" type="button" data-close-modal="confirmDeleteModal" aria-label="Fechar">×</button>
+        </header>
+        <div class="confirm-body" id="confirmDeleteBody"></div>
+        <footer class="modal-actions">
+          <button class="ghost-btn ripple-btn" type="button" data-close-modal="confirmDeleteModal">Cancelar</button>
+          <button class="danger-btn ripple-btn" type="button" id="confirmDeleteProblemBtn">Excluir definitivamente</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <dialog class="modal confirm-modal" id="confirmProfileDeleteModal">
+      <div class="modal-shell">
+        <header class="modal-header">
+          <div>
+            <small>Excluir perfil</small>
+            <h2>Confirmar exclusão</h2>
+          </div>
+          <button class="icon-button ripple-btn" type="button" data-close-modal="confirmProfileDeleteModal" aria-label="Fechar">×</button>
+        </header>
+        <div class="confirm-body" id="confirmProfileDeleteBody"></div>
+        <footer class="modal-actions">
+          <button class="ghost-btn ripple-btn" type="button" data-close-modal="confirmProfileDeleteModal">Cancelar</button>
+          <button class="danger-btn ripple-btn" type="button" id="confirmDeleteProfileBtn">Excluir perfil</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <dialog class="modal confirm-modal" id="confirmAssetDeleteModal">
+      <div class="modal-shell">
+        <header class="modal-header">
+          <div>
+            <small>Excluir recurso de TI</small>
+            <h2>Confirmar exclusão</h2>
+          </div>
+          <button class="icon-button ripple-btn" type="button" data-close-modal="confirmAssetDeleteModal" aria-label="Fechar">×</button>
+        </header>
+        <div class="confirm-body" id="confirmAssetDeleteBody"></div>
+        <footer class="modal-actions">
+          <button class="ghost-btn ripple-btn" type="button" data-close-modal="confirmAssetDeleteModal">Cancelar</button>
+          <button class="danger-btn ripple-btn" type="button" id="confirmDeleteAssetBtn">Excluir recurso</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <template id="iconTemplate"></template>
+    <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="data.js"></script>
+    <script src="xlsx-export.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
