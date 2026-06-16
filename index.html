@@ -6,7 +6,7 @@
     <title>SolveDesk Pro</title>
     <link rel="stylesheet" href="styles.css">
   </head>
-  <body>
+  <body class="auth-locked">
     <div class="boot-screen" id="bootScreen" aria-hidden="true">
       <div class="boot-orbit">
         <span></span><span></span><span></span><span></span><span></span><span></span>
@@ -14,7 +14,39 @@
       <strong>SolveDesk Pro</strong>
     </div>
 
-    <div class="app-frame">
+    <section class="login-screen" id="loginScreen" aria-label="Login do SolveDesk Pro">
+      <div class="login-card">
+        <div class="login-brand">
+          <span class="brand-orb">SD</span>
+          <div>
+            <strong>SolveDesk Pro</strong>
+            <small>Acesso restrito</small>
+          </div>
+        </div>
+        <div class="login-copy">
+          <span class="panel-kicker">segurança</span>
+          <h1>Entrar no painel</h1>
+          <p>Use as credenciais autorizadas para acessar problemas, recursos, usuários e relatórios.</p>
+        </div>
+        <form class="login-form" id="loginForm" autocomplete="off">
+          <label class="form-group">
+            <span>Login</span>
+            <input id="loginUser" name="username" type="text" autocomplete="username" required>
+          </label>
+          <label class="form-group">
+            <span>Senha</span>
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <p class="login-error" id="loginError" role="alert"></p>
+          <button class="primary-btn ripple-btn" type="submit">Acessar sistema</button>
+        </form>
+      </div>
+      <div class="login-orbit" aria-hidden="true">
+        <span></span><span></span><span></span><span></span>
+      </div>
+    </section>
+
+    <div class="app-frame" aria-hidden="true">
       <aside class="sidebar" id="sidebar">
         <button class="sidebar-toggle icon-button" id="sidebarToggle" type="button" aria-label="Alternar menu">
           <span class="icon-bars"></span>
@@ -56,6 +88,7 @@
             <button class="ghost-btn ripple-btn" id="quickProblemBtn" type="button"><span data-icon="plus"></span>Novo problema</button>
             <button class="primary-btn ripple-btn" id="exportIndicatorsBtn" type="button"><span data-icon="excel"></span>Exportar indicadores</button>
             <button class="theme-btn ripple-btn" id="themeToggle" type="button" aria-label="Alternar tema"><span class="theme-dot"></span></button>
+            <button class="ghost-btn ripple-btn" id="logoutBtn" type="button">Sair</button>
           </div>
         </header>
 

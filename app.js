@@ -1,5 +1,13 @@
 const STORE_KEY = "solvedesk-pro-state-v1";
 const THEME_KEY = "solvedesk-pro-theme";
+const AUTH_SESSION_KEY = "solvedesk-pro-auth-session";
+const AUTH_ATTEMPTS_KEY = "solvedesk-pro-auth-attempts";
+const AUTH_LOCK_UNTIL_KEY = "solvedesk-pro-auth-lock-until";
+const AUTH_USER = "admti";
+const AUTH_PASSWORD_HASH = "daede7a2a89cee300271e8341c17332aad34e21a2d8e2a9b011bd30f45b57acf";
+const AUTH_MAX_ATTEMPTS = 5;
+const AUTH_LOCK_MS = 5 * 60 * 1000;
+const AUTH_SESSION_MS = 8 * 60 * 60 * 1000;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -42,6 +50,8 @@ const state = {
   pendingDeleteProfileName: "",
   pendingDeleteAssetId: ""
 };
+
+let appStarted = false;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -111,6 +121,115 @@ function formatDate(value) {
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+}
+
+async function sha256(text) {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function authSession() {
+  try {
+    const session = JSON.parse(sessionStorage.getItem(AUTH_SESSION_KEY) || "null");
+    if (!session || session.user !== AUTH_USER || Number(session.expiresAt || 0) < Date.now()) {
+      sessionStorage.removeItem(AUTH_SESSION_KEY);
+      return null;
+    }
+    return session;
+  } catch {
+    sessionStorage.removeItem(AUTH_SESSION_KEY);
+    return null;
+  }
+}
+
+function setLoginError(message, active = true) {
+  const error = $("#loginError");
+  if (!error) return;
+  error.textContent = message;
+  error.classList.toggle("active", active && Boolean(message));
+}
+
+function lockUntil() {
+  return Number(localStorage.getItem(AUTH_LOCK_UNTIL_KEY) || 0);
+}
+
+function lockMessage() {
+  const remaining = Math.ceil((lockUntil() - Date.now()) / 1000);
+  if (remaining <= 0) return "";
+  const minutes = Math.floor(remaining / 60);
+  const seconds = remaining % 60;
+  return `Acesso bloqueado por ${minutes}:${String(seconds).padStart(2, "0")}.`;
+}
+
+function recordFailedLogin() {
+  const attempts = Number(localStorage.getItem(AUTH_ATTEMPTS_KEY) || 0) + 1;
+  if (attempts >= AUTH_MAX_ATTEMPTS) {
+    localStorage.setItem(AUTH_LOCK_UNTIL_KEY, String(Date.now() + AUTH_LOCK_MS));
+    localStorage.setItem(AUTH_ATTEMPTS_KEY, "0");
+    return "Muitas tentativas incorretas. Tente novamente em 5 minutos.";
+  }
+  localStorage.setItem(AUTH_ATTEMPTS_KEY, String(attempts));
+  return `Login ou senha incorretos. Tentativa ${attempts}/${AUTH_MAX_ATTEMPTS}.`;
+}
+
+function unlockApp() {
+  document.body.classList.remove("auth-locked");
+  document.body.classList.add("auth-ready");
+  $(".app-frame")?.removeAttribute("aria-hidden");
+  $("#loginScreen")?.setAttribute("aria-hidden", "true");
+}
+
+function showLogin() {
+  document.body.classList.add("auth-locked");
+  document.body.classList.remove("auth-ready");
+  $(".app-frame")?.setAttribute("aria-hidden", "true");
+  $("#loginScreen")?.removeAttribute("aria-hidden");
+  setLoginError(lockUntil() > Date.now() ? lockMessage() : "", false);
+  window.setTimeout(() => $("#loginUser")?.focus(), 100);
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  if (lockUntil() > Date.now()) {
+    setLoginError(lockMessage());
+    return;
+  }
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const username = String(data.get("username") || "").trim();
+  const password = String(data.get("password") || "");
+  const passwordHash = await sha256(password);
+
+  if (username !== AUTH_USER || passwordHash !== AUTH_PASSWORD_HASH) {
+    setLoginError(recordFailedLogin());
+    $("#loginPassword").value = "";
+    $("#loginPassword").focus();
+    return;
+  }
+
+  localStorage.removeItem(AUTH_ATTEMPTS_KEY);
+  localStorage.removeItem(AUTH_LOCK_UNTIL_KEY);
+  sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({
+    user: AUTH_USER,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + AUTH_SESSION_MS
+  }));
+  form.reset();
+  setLoginError("");
+  startApp();
+}
+
+function bindAuthEvents() {
+  $("#loginForm")?.addEventListener("submit", (event) => {
+    handleLogin(event).catch(() => {
+      setLoginError("Não foi possível validar o acesso neste navegador.");
+    });
+  });
+  $("#logoutBtn")?.addEventListener("click", () => {
+    sessionStorage.removeItem(AUTH_SESSION_KEY);
+    window.location.reload();
+  });
 }
 
 function countBy(items, keyFn) {
@@ -293,7 +412,7 @@ function renderDashboard() {
         </div>
       </article>
     </section>
-    <section class="settings-grid">
+    <section class="content-grid">
       <article class="glass-panel reveal">
         <div class="panel-head"><div><span class="panel-kicker">evolução</span><h2>Chamados por mês</h2></div></div>
         <div class="chart-bars">
@@ -849,10 +968,107 @@ function checklistTemplateCards() {
   `).join("") || `<div class="empty-state">Nenhum modelo de checklist cadastrado.</div>`;
 }
 
+function refreshSettings() {
+  renderSettings();
+  buildProblemForm();
+  injectIcons($("#view-settings"));
+  observeReveals();
+}
+
+function defaultChecklistItems() {
+  return ["Diagnosticar", "Testar", "Resolver", "Validar", "Documentar"];
+}
+
+function addCategory(category) {
+  const name = category.trim();
+  if (!name) return;
+  const exists = state.categories.some((item) => normalize(item) === normalize(name));
+  if (exists) {
+    toast("Categoria já existe", name);
+    return;
+  }
+  state.categories.push(name);
+  state.categories = unique(state.categories);
+  if (!state.checklists[name]) state.checklists[name] = defaultChecklistItems();
+  saveState();
+  refreshSettings();
+  toast("Categoria adicionada", name);
+}
+
+function deleteCategory(category) {
+  const total = categoryUsage(category);
+  if (total > 0) {
+    toast("Categoria em uso", `Existem ${total} registro${total === 1 ? "" : "s"} usando "${category}".`);
+    return;
+  }
+  if (!window.confirm(`Excluir a categoria "${category}" e o modelo de checklist vinculado?`)) return;
+  state.categories = state.categories.filter((item) => item !== category);
+  delete state.checklists[category];
+  if (state.filters.problems.category === category) state.filters.problems.category = "Todos";
+  if (state.filters.knowledge.category === category) state.filters.knowledge.category = "Todos";
+  saveState();
+  refreshSettings();
+  toast("Categoria removida", category);
+}
+
+function createChecklistModel(model, items = []) {
+  const name = model.trim();
+  if (!name) return;
+  const categoryMatch = state.categories.find((item) => normalize(item) === normalize(name));
+  const checklistMatch = Object.keys(state.checklists).find((item) => normalize(item) === normalize(name));
+  const finalName = categoryMatch || checklistMatch || name;
+
+  if (state.checklists[finalName]) {
+    toast("Modelo já existe", finalName);
+    return;
+  }
+
+  if (!categoryMatch) {
+    state.categories.push(finalName);
+    state.categories = unique(state.categories);
+  }
+  state.checklists[finalName] = items.length ? unique(items) : defaultChecklistItems();
+  saveState();
+  refreshSettings();
+  toast("Modelo criado", finalName);
+}
+
+function deleteChecklistModel(category) {
+  if (!state.checklists[category]) return;
+  if (!window.confirm(`Excluir o modelo de checklist "${category}"? A categoria será mantida.`)) return;
+  delete state.checklists[category];
+  saveState();
+  refreshSettings();
+  toast("Modelo removido", category);
+}
+
+function addChecklistItem(category, item) {
+  const text = item.trim();
+  if (!text) return;
+  state.checklists[category] = state.checklists[category] || [];
+  if (state.checklists[category].some((existing) => normalize(existing) === normalize(text))) {
+    toast("Item já existe", text);
+    return;
+  }
+  state.checklists[category].push(text);
+  saveState();
+  refreshSettings();
+  toast("Item adicionado", category);
+}
+
+function deleteChecklistItem(category, index) {
+  if (!Array.isArray(state.checklists[category])) return;
+  const removed = state.checklists[category][index];
+  state.checklists[category].splice(index, 1);
+  saveState();
+  refreshSettings();
+  toast("Item removido", removed || category);
+}
+
 function renderSettings() {
   $("#view-settings").innerHTML = `
     ${pageHead("configurações", "Categorias e checklists", "Taxonomia editável para adaptar a base ao processo da empresa.")}
-    <section class="content-grid">
+    <section class="settings-grid">
       <article class="settings-card reveal">
         <div class="panel-head"><div><span class="panel-kicker">categorias</span><h2>Cadastro de categorias</h2></div></div>
         <form class="settings-form" id="categoryForm">
@@ -873,7 +1089,7 @@ function renderSettings() {
         <div class="panel-head"><div><span class="panel-kicker">checklists</span><h2>Modelos cadastrados</h2></div></div>
         <div class="checklist-template-grid">${checklistTemplateCards()}</div>
       </article>
-      <article class="settings-card reveal">
+      <article class="settings-card reveal legacy-checklist-list">
         <div class="panel-head"><div><span class="panel-kicker">checklists</span><h2>Modelos</h2></div></div>
         <div class="list-stack">${Object.entries(state.checklists).map(([category, items]) => `<div class="compact-row"><div><h3>${escapeHtml(category)}</h3><p>${items.map(escapeHtml).join(" · ")}</p></div><span class="tag">${items.length} itens</span></div>`).join("")}</div>
       </article>
@@ -1518,6 +1734,41 @@ function bindEvents() {
       return;
     }
 
+    const createChecklistButton = event.target.closest("[data-create-checklist-model]");
+    if (createChecklistButton) {
+      const category = createChecklistButton.dataset.createChecklistModel;
+      if (state.checklists[category]) {
+        toast("Modelo já existe", category);
+      } else {
+        state.checklists[category] = defaultChecklistItems();
+        saveState();
+        refreshSettings();
+        toast("Modelo criado", category);
+      }
+      return;
+    }
+
+    const deleteCategoryButton = event.target.closest("[data-delete-category]");
+    if (deleteCategoryButton) {
+      deleteCategory(deleteCategoryButton.dataset.deleteCategory);
+      return;
+    }
+
+    const deleteChecklistModelButton = event.target.closest("[data-delete-checklist-model]");
+    if (deleteChecklistModelButton) {
+      deleteChecklistModel(deleteChecklistModelButton.dataset.deleteChecklistModel);
+      return;
+    }
+
+    const deleteChecklistItemButton = event.target.closest("[data-delete-checklist-item-category]");
+    if (deleteChecklistItemButton) {
+      deleteChecklistItem(
+        deleteChecklistItemButton.dataset.deleteChecklistItemCategory,
+        Number(deleteChecklistItemButton.dataset.deleteChecklistItemIndex)
+      );
+      return;
+    }
+
     const validateButton = event.target.closest("[data-validate]");
     if (validateButton) {
       const problem = state.problems.find((item) => item.id === validateButton.dataset.validate);
@@ -1739,18 +1990,28 @@ function bindEvents() {
   });
 
   document.addEventListener("submit", (event) => {
-    if (event.target.id !== "categoryForm") return;
-    event.preventDefault();
-    const category = new FormData(event.target).get("category").trim();
-    if (!category) return;
-    if (!state.categories.includes(category)) {
-      state.categories.push(category);
-      state.checklists[category] = ["Diagnosticar", "Testar", "Resolver", "Validar", "Documentar"];
-      saveState();
-      renderSettings();
-      injectIcons($("#view-settings"));
-      observeReveals();
-      toast("Categoria adicionada", category);
+    const categoryForm = event.target.closest("#categoryForm");
+    if (categoryForm) {
+      event.preventDefault();
+      addCategory(new FormData(categoryForm).get("category"));
+      categoryForm.reset();
+      return;
+    }
+
+    const checklistModelForm = event.target.closest("#checklistModelForm");
+    if (checklistModelForm) {
+      event.preventDefault();
+      const data = new FormData(checklistModelForm);
+      createChecklistModel(data.get("model"), listFromText(data.get("items")));
+      checklistModelForm.reset();
+      return;
+    }
+
+    const checklistItemForm = event.target.closest("[data-checklist-item-form]");
+    if (checklistItemForm) {
+      event.preventDefault();
+      addChecklistItem(checklistItemForm.dataset.checklistItemForm, new FormData(checklistItemForm).get("item"));
+      checklistItemForm.reset();
     }
   });
 }
@@ -1760,8 +2021,12 @@ function initRoles() {
   $("#roleHint").textContent = role().hint;
 }
 
-function init() {
-  initTheme();
+function startApp() {
+  if (appStarted) {
+    unlockApp();
+    return;
+  }
+  appStarted = true;
   loadState();
   initRoles();
   buildProblemForm();
@@ -1771,6 +2036,18 @@ function init() {
   injectIcons();
   bindEvents();
   renderRoute();
+  unlockApp();
+}
+
+function init() {
+  initTheme();
+  bindAuthEvents();
+  injectIcons($("#loginScreen"));
+  if (authSession()) {
+    startApp();
+  } else {
+    showLogin();
+  }
   setTimeout(() => $("#bootScreen").classList.add("hide"), 700);
 }
 
