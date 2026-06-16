@@ -1,13 +1,16 @@
 const STORE_KEY = "solvedesk-pro-state-v1";
 const THEME_KEY = "solvedesk-pro-theme";
-const AUTH_SESSION_KEY = "solvedesk-pro-auth-session";
-const AUTH_ATTEMPTS_KEY = "solvedesk-pro-auth-attempts";
-const AUTH_LOCK_UNTIL_KEY = "solvedesk-pro-auth-lock-until";
-const AUTH_USER = "admti";
-const AUTH_PASSWORD_HASH = "daede7a2a89cee300271e8341c17332aad34e21a2d8e2a9b011bd30f45b57acf";
-const AUTH_MAX_ATTEMPTS = 5;
-const AUTH_LOCK_MS = 5 * 60 * 1000;
-const AUTH_SESSION_MS = 8 * 60 * 60 * 1000;
+const SUPABASE_URL = "https://ktovpehotipivowkffkal.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0b3ZwZWhvdGlwaXdvdmtma2FsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MjYwNTcsImV4cCI6MjA5NzIwMjA1N30.8u7yQxv_pfzv5h9JxORk-PS9gRo7p2_gCSYBiLSLxKk";
+const SUPABASE_WORKSPACE_TABLE = "solvedesk_workspace";
+const SUPABASE_PROFILE_TABLE = "solvedesk_profiles";
+const supabaseClient = window.supabase?.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true
+  }
+});
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -48,32 +51,21 @@ const state = {
   exportScope: "all",
   pendingDeleteProblemId: "",
   pendingDeleteProfileName: "",
-  pendingDeleteAssetId: ""
+  pendingDeleteAssetId: "",
+  authUser: null,
+  workspaceLoaded: false,
+  remoteChannel: null
 };
 
 let appStarted = false;
+let saveTimer;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function loadState() {
-  const saved = localStorage.getItem(STORE_KEY);
-  if (saved) {
-    try {
-      Object.assign(state, JSON.parse(saved));
-      return;
-    } catch {
-      localStorage.removeItem(STORE_KEY);
-    }
-  }
-  Object.assign(state, clone(window.SolveDeskSeed));
-  state.activeRole = "manager";
-  saveState();
-}
-
-function saveState() {
-  localStorage.setItem(STORE_KEY, JSON.stringify({
+function statePayload() {
+  return {
     problems: state.problems,
     assets: state.assets,
     categories: state.categories,
@@ -82,7 +74,83 @@ function saveState() {
     users: state.users,
     checklists: state.checklists,
     activeRole: state.activeRole
-  }));
+  };
+}
+
+function applyWorkspaceData(data) {
+  const seed = clone(window.SolveDeskSeed);
+  const payload = data || {};
+  state.problems = Array.isArray(payload.problems) ? payload.problems : seed.problems;
+  state.assets = Array.isArray(payload.assets) ? payload.assets : seed.assets;
+  state.categories = Array.isArray(payload.categories) ? payload.categories : seed.categories;
+  state.sectors = Array.isArray(payload.sectors) ? payload.sectors : seed.sectors;
+  state.roles = Array.isArray(payload.roles) ? payload.roles : seed.roles;
+  state.users = Array.isArray(payload.users) ? payload.users : seed.users;
+  state.checklists = payload.checklists && typeof payload.checklists === "object" ? payload.checklists : seed.checklists;
+  state.activeRole = payload.activeRole || "manager";
+}
+
+function legacyLocalState() {
+  const saved = localStorage.getItem(STORE_KEY);
+  if (!saved) return null;
+  try {
+    return JSON.parse(saved);
+  } catch {
+    localStorage.removeItem(STORE_KEY);
+    return null;
+  }
+}
+
+async function loadState() {
+  if (!supabaseClient || !state.authUser) throw new Error("Supabase não inicializado.");
+  const { data, error } = await supabaseClient
+    .from(SUPABASE_WORKSPACE_TABLE)
+    .select("data")
+    .eq("user_id", state.authUser.id)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  if (data?.data) {
+    applyWorkspaceData(data.data);
+  } else {
+    applyWorkspaceData(legacyLocalState() || clone(window.SolveDeskSeed));
+    await persistStateNow();
+  }
+
+  localStorage.removeItem(STORE_KEY);
+  state.workspaceLoaded = true;
+}
+
+async function persistProfile() {
+  if (!supabaseClient || !state.authUser) return;
+  await supabaseClient
+    .from(SUPABASE_PROFILE_TABLE)
+    .upsert({
+      user_id: state.authUser.id,
+      email: state.authUser.email,
+      updated_at: new Date().toISOString()
+    }, { onConflict: "user_id" });
+}
+
+async function persistStateNow() {
+  if (!supabaseClient || !state.authUser) return;
+  const { error } = await supabaseClient
+    .from(SUPABASE_WORKSPACE_TABLE)
+    .upsert({
+      user_id: state.authUser.id,
+      data: statePayload(),
+      updated_at: new Date().toISOString()
+    }, { onConflict: "user_id" });
+  if (error) throw error;
+}
+
+function saveState() {
+  if (!supabaseClient || !state.authUser) return;
+  window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => {
+    persistStateNow().catch((error) => toast("Falha ao sincronizar", error.message || "Confira o Supabase."));
+  }, 350);
 }
 
 function escapeHtml(value) {
@@ -123,54 +191,11 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
 }
 
-async function sha256(text) {
-  const bytes = new TextEncoder().encode(text);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function authSession() {
-  try {
-    const session = JSON.parse(sessionStorage.getItem(AUTH_SESSION_KEY) || "null");
-    if (!session || session.user !== AUTH_USER || Number(session.expiresAt || 0) < Date.now()) {
-      sessionStorage.removeItem(AUTH_SESSION_KEY);
-      return null;
-    }
-    return session;
-  } catch {
-    sessionStorage.removeItem(AUTH_SESSION_KEY);
-    return null;
-  }
-}
-
 function setLoginError(message, active = true) {
   const error = $("#loginError");
   if (!error) return;
   error.textContent = message;
   error.classList.toggle("active", active && Boolean(message));
-}
-
-function lockUntil() {
-  return Number(localStorage.getItem(AUTH_LOCK_UNTIL_KEY) || 0);
-}
-
-function lockMessage() {
-  const remaining = Math.ceil((lockUntil() - Date.now()) / 1000);
-  if (remaining <= 0) return "";
-  const minutes = Math.floor(remaining / 60);
-  const seconds = remaining % 60;
-  return `Acesso bloqueado por ${minutes}:${String(seconds).padStart(2, "0")}.`;
-}
-
-function recordFailedLogin() {
-  const attempts = Number(localStorage.getItem(AUTH_ATTEMPTS_KEY) || 0) + 1;
-  if (attempts >= AUTH_MAX_ATTEMPTS) {
-    localStorage.setItem(AUTH_LOCK_UNTIL_KEY, String(Date.now() + AUTH_LOCK_MS));
-    localStorage.setItem(AUTH_ATTEMPTS_KEY, "0");
-    return "Muitas tentativas incorretas. Tente novamente em 5 minutos.";
-  }
-  localStorage.setItem(AUTH_ATTEMPTS_KEY, String(attempts));
-  return `Login ou senha incorretos. Tentativa ${attempts}/${AUTH_MAX_ATTEMPTS}.`;
 }
 
 function unlockApp() {
@@ -185,50 +210,62 @@ function showLogin() {
   document.body.classList.remove("auth-ready");
   $(".app-frame")?.setAttribute("aria-hidden", "true");
   $("#loginScreen")?.removeAttribute("aria-hidden");
-  setLoginError(lockUntil() > Date.now() ? lockMessage() : "", false);
-  window.setTimeout(() => $("#loginUser")?.focus(), 100);
+  setLoginError(supabaseClient ? "" : "Supabase não carregou. Verifique a conexão com a internet.", !supabaseClient);
+  window.setTimeout(() => $("#loginEmail")?.focus(), 100);
 }
 
 async function handleLogin(event) {
   event.preventDefault();
-  if (lockUntil() > Date.now()) {
-    setLoginError(lockMessage());
-    return;
-  }
+  if (!supabaseClient) throw new Error("Supabase não inicializado.");
   const form = event.currentTarget;
   const data = new FormData(form);
-  const username = String(data.get("username") || "").trim();
+  const email = String(data.get("email") || "").trim();
   const password = String(data.get("password") || "");
-  const passwordHash = await sha256(password);
+  const mode = form.dataset.mode || "signin";
+  const button = $("#authSubmitBtn");
+  button.disabled = true;
+  button.textContent = mode === "signup" ? "Criando acesso..." : "Entrando...";
 
-  if (username !== AUTH_USER || passwordHash !== AUTH_PASSWORD_HASH) {
-    setLoginError(recordFailedLogin());
-    $("#loginPassword").value = "";
-    $("#loginPassword").focus();
-    return;
+  try {
+    const response = mode === "signup"
+      ? await supabaseClient.auth.signUp({ email, password })
+      : await supabaseClient.auth.signInWithPassword({ email, password });
+    if (response.error) throw response.error;
+    if (mode === "signup" && !response.data.session) {
+      setLoginError("Cadastro criado. Confirme o e-mail se o Supabase solicitar e depois entre.", false);
+      return;
+    }
+    state.authUser = response.data.user;
+    form.reset();
+    setLoginError("");
+    await startApp();
+  } finally {
+    button.disabled = false;
+    button.textContent = mode === "signup" ? "Criar acesso" : "Entrar";
   }
+}
 
-  localStorage.removeItem(AUTH_ATTEMPTS_KEY);
-  localStorage.removeItem(AUTH_LOCK_UNTIL_KEY);
-  sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({
-    user: AUTH_USER,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + AUTH_SESSION_MS
-  }));
-  form.reset();
+function setAuthMode(mode) {
+  const form = $("#loginForm");
+  if (!form) return;
+  form.dataset.mode = mode;
+  $("[data-auth-mode='signin']")?.classList.toggle("active", mode === "signin");
+  $("[data-auth-mode='signup']")?.classList.toggle("active", mode === "signup");
+  $("#authSubmitBtn").textContent = mode === "signup" ? "Criar acesso" : "Entrar";
   setLoginError("");
-  startApp();
 }
 
 function bindAuthEvents() {
+  $$("[data-auth-mode]").forEach((button) => {
+    button.addEventListener("click", () => setAuthMode(button.dataset.authMode));
+  });
   $("#loginForm")?.addEventListener("submit", (event) => {
-    handleLogin(event).catch(() => {
+    handleLogin(event).catch((error) => {
       setLoginError("Não foi possível validar o acesso neste navegador.");
     });
   });
   $("#logoutBtn")?.addEventListener("click", () => {
-    sessionStorage.removeItem(AUTH_SESSION_KEY);
-    window.location.reload();
+    supabaseClient?.auth.signOut().finally(() => window.location.reload());
   });
 }
 
@@ -2021,13 +2058,38 @@ function initRoles() {
   $("#roleHint").textContent = role().hint;
 }
 
-function startApp() {
+function subscribeWorkspace() {
+  if (!supabaseClient || !state.authUser || state.remoteChannel) return;
+  state.remoteChannel = supabaseClient
+    .channel(`solvedesk-workspace-${state.authUser.id}`)
+    .on("postgres_changes", {
+      event: "UPDATE",
+      schema: "public",
+      table: SUPABASE_WORKSPACE_TABLE,
+      filter: `user_id=eq.${state.authUser.id}`
+    }, (payload) => {
+      if (!payload.new?.data) return;
+      applyWorkspaceData(payload.new.data);
+      renderRoute();
+      initRoles();
+      buildProblemForm();
+      buildAssetForm();
+      buildUserForm();
+      buildExportOptions();
+      injectIcons();
+      toast("Dados sincronizados", "Atualização recebida do Supabase.");
+    })
+    .subscribe();
+}
+
+async function startApp() {
   if (appStarted) {
     unlockApp();
     return;
   }
+  await persistProfile();
+  await loadState();
   appStarted = true;
-  loadState();
   initRoles();
   buildProblemForm();
   buildAssetForm();
@@ -2035,20 +2097,35 @@ function startApp() {
   buildExportOptions();
   injectIcons();
   bindEvents();
+  subscribeWorkspace();
   renderRoute();
   unlockApp();
 }
 
-function init() {
+async function init() {
   initTheme();
   bindAuthEvents();
   injectIcons($("#loginScreen"));
-  if (authSession()) {
-    startApp();
+  if (!supabaseClient) {
+    showLogin();
+    setTimeout(() => $("#bootScreen").classList.add("hide"), 700);
+    return;
+  }
+  const { data } = await supabaseClient.auth.getSession();
+  if (data.session?.user) {
+    state.authUser = data.session.user;
+    await startApp().catch((error) => {
+      showLogin();
+      setLoginError(error.message || "Não foi possível carregar seus dados.");
+    });
   } else {
     showLogin();
   }
   setTimeout(() => $("#bootScreen").classList.add("hide"), 700);
 }
 
-init();
+init().catch((error) => {
+  showLogin();
+  setLoginError(error.message || "Não foi possível iniciar o Supabase.");
+  setTimeout(() => $("#bootScreen").classList.add("hide"), 700);
+});

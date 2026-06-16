@@ -271,6 +271,19 @@ a {
   gap: 14px;
 }
 
+.auth-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.auth-tabs .tab-pill.active {
+  border-color: var(--teal);
+  background: rgba(37, 208, 179, 0.14);
+  color: var(--text);
+  box-shadow: 0 14px 34px rgba(37, 208, 179, 0.14);
+}
+
 .login-error {
   min-height: 22px;
   margin: 0;
