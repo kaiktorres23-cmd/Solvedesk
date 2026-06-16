@@ -4,6 +4,15 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const SUPABASE_WORKSPACE_TABLE = "solvedesk_workspace";
 const SUPABASE_PROFILE_TABLE = "solvedesk_profiles";
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const SUPABASE_HEALTH_URL = `${SUPABASE_URL}/auth/v1/health`;
+
+console.info("[Supabase Config]", {
+  url: SUPABASE_URL,
+  host: new URL(SUPABASE_URL).hostname,
+  authSignupUrl: `${SUPABASE_URL}/auth/v1/signup`,
+  hasUnderscore: SUPABASE_URL.includes("_"),
+  hasSupabaseDomain: SUPABASE_URL.endsWith(".supabase.co")
+});
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -192,7 +201,31 @@ function supabaseErrorMessage(error, fallback = "Erro desconhecido do Supabase."
 
 function reportAuthError(error, context = "Erro de autenticação") {
   console.error(`[Supabase Auth] ${context}`, error);
-  setLoginError(supabaseErrorMessage(error, context));
+  const message = supabaseErrorMessage(error, context);
+  if (message === "Failed to fetch" || message.includes("Failed to fetch")) {
+    setLoginError(`Falha de rede ao acessar ${SUPABASE_URL}. Confira se o projeto Supabase existe e se o DNS resolve este domínio.`);
+    return;
+  }
+  setLoginError(message);
+}
+
+async function assertSupabaseReachable() {
+  try {
+    const response = await fetch(SUPABASE_HEALTH_URL, { cache: "no-store" });
+    console.info("[Supabase Network] health check", {
+      url: SUPABASE_HEALTH_URL,
+      ok: response.ok,
+      status: response.status
+    });
+  } catch (error) {
+    console.error("[Supabase Network] Falha ao acessar Supabase", {
+      url: SUPABASE_HEALTH_URL,
+      configuredUrl: SUPABASE_URL,
+      expectedHost: "ktovpehotipivowkffkal.supabase.co",
+      error
+    });
+    throw error;
+  }
 }
 
 function unlockApp() {
@@ -224,6 +257,7 @@ async function handleLogin(event) {
   button.textContent = mode === "signup" ? "Criando acesso..." : "Entrando...";
 
   try {
+    await assertSupabaseReachable();
     const response = mode === "signup"
       ? await supabaseClient.auth.signUp({ email, password })
       : await supabaseClient.auth.signInWithPassword({ email, password });
