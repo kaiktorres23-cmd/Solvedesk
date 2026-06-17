@@ -1,5 +1,5 @@
 const THEME_KEY = "solvedesk-pro-theme";
-const SUPABASE_URL = "https://ktovpehotipivowkffkal.supabase.co";
+const SUPABASE_URL = "https://ktovpehotipiwovkfkal.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt0b3ZwZWhvdGlwaXdvdmtma2FsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MjYwNTcsImV4cCI6MjA5NzIwMjA1N30.8u7yQxv_pfzv5h9JxORk-PS9gRo7p2_gCSYBiLSLxKk";
 const SUPABASE_WORKSPACE_TABLE = "solvedesk_workspace";
 const SUPABASE_PROFILE_TABLE = "solvedesk_profiles";
@@ -223,7 +223,7 @@ async function assertSupabaseReachable() {
     console.error("[Supabase Network] Falha ao acessar Supabase", {
       url: SUPABASE_HEALTH_URL,
       configuredUrl: SUPABASE_URL,
-      expectedHost: "ktovpehotipivowkffkal.supabase.co",
+      expectedHost: "ktovpehotipiwovkfkal.supabase.co",
       error
     });
     throw error;
