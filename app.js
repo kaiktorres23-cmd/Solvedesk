@@ -40,6 +40,9 @@ const state = {
   route: "dashboard",
   problems: [],
   assets: [],
+  inventorySectors: [],
+  inventoryMovements: [],
+  assetMaintenances: [],
   categories: [],
   sectors: [],
   roles: [],
@@ -53,6 +56,9 @@ const state = {
     knowledge: { query: "", category: "Todos", urgency: "Todos" }
   },
   exportScope: "all",
+  inventoryView: "map",
+  selectedInventorySector: "",
+  editingAssetId: "",
   pendingDeleteProblemId: "",
   pendingDeleteProfileName: "",
   pendingDeleteAssetId: "",
@@ -72,6 +78,9 @@ function statePayload() {
   return {
     problems: state.problems,
     assets: state.assets,
+    inventorySectors: state.inventorySectors,
+    inventoryMovements: state.inventoryMovements,
+    assetMaintenances: state.assetMaintenances,
     categories: state.categories,
     sectors: state.sectors,
     roles: state.roles,
@@ -81,17 +90,162 @@ function statePayload() {
   };
 }
 
+function ensureArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function sectorSlug(name) {
+  return normalize(name).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `setor-${Date.now()}`;
+}
+
+function normalizeAsset(asset = {}) {
+  const storage = asset.storage || asset.location || asset.sector || "Sem localização";
+  const lastMaintenance = asset.lastMaintenance
+    || ensureArray(asset.maintenance)[0]?.[0]
+    || asset.lastCheck
+    || "";
+  return {
+    ...asset,
+    code: asset.code || asset.patrimony || asset.patrimonio || "",
+    patrimony: asset.patrimony || asset.code || asset.patrimonio || "",
+    location: asset.location || storage,
+    deskRoom: asset.deskRoom || asset.room || asset.storage || "",
+    responsible: asset.responsible || asset.user || "",
+    user: asset.user || asset.responsible || "",
+    physicalState: asset.physicalState || asset.condition || "Bom",
+    condition: asset.condition || asset.physicalState || "Bom",
+    registeredAt: asset.registeredAt || asset.createdAt || asset.acquiredAt || new Date().toISOString().slice(0, 10),
+    lastMaintenance,
+    maintenance: ensureArray(asset.maintenance),
+    linkedProblems: ensureArray(asset.linkedProblems),
+    tickets: ensureArray(asset.tickets),
+    movementHistory: ensureArray(asset.movementHistory),
+    quantity: Number(asset.quantity || 1),
+    available: Number(asset.available || 0),
+    inUse: Number(asset.inUse || 0),
+    defective: Number(asset.defective || 0),
+    minStock: Number(asset.minStock || 0)
+  };
+}
+
+function deriveInventorySectors(names, existing = []) {
+  const byName = new Map(existing.map((sector) => [normalize(sector.name), sector]));
+  return unique(names.filter(Boolean)).map((name) => {
+    const current = byName.get(normalize(name)) || {};
+    return {
+      id: current.id || `SEC-${sectorSlug(name)}`,
+      name,
+      description: current.description || `Setor ${name} monitorado no inventário de TI.`,
+      owner: current.owner || current.responsible || role()?.name || "Gestor de TI",
+      location: current.location || current.physicalLocation || name,
+      createdAt: current.createdAt || new Date().toISOString().slice(0, 10)
+    };
+  });
+}
+
+function inventorySectorStats(sectorName) {
+  const assets = state.assets.filter((asset) => asset.sector === sectorName);
+  const openProblems = state.problems.filter((problem) => problem.sector === sectorName && !["Resolvido", "Validado", "Arquivado"].includes(problem.status));
+  const maintenance = assets.filter((asset) => ["Em manutenção", "Com defeito", "Aguardando peça"].includes(asset.status));
+  const lowStock = assets.filter((asset) => Number(asset.available || 0) < Number(asset.minStock || 0));
+  return {
+    assets,
+    resources: assets.reduce((sum, asset) => sum + Number(asset.quantity || 1), 0),
+    openProblems,
+    maintenance,
+    lowStock
+  };
+}
+
+function addMovement(assetId, type, text, meta = {}) {
+  const asset = state.assets.find((item) => item.id === assetId);
+  const entry = {
+    id: `MOV-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    assetId,
+    type,
+    text,
+    actor: role().name,
+    createdAt: new Date().toISOString(),
+    ...meta
+  };
+  state.inventoryMovements.unshift(entry);
+  if (asset) {
+    asset.movementHistory = ensureArray(asset.movementHistory);
+    asset.movementHistory.unshift(entry);
+  }
+  return entry;
+}
+
+function deriveAssetMaintenances(assets) {
+  return assets.flatMap((asset) => ensureArray(asset.maintenance).map(([date, text, status], index) => ({
+    id: `MNT-${asset.id}-${index}`,
+    assetId: asset.id,
+    assetName: asset.name,
+    problem: text || "Manutenção registrada",
+    technician: "Equipe de TI",
+    entryDate: date || asset.lastMaintenance || asset.lastCheck || asset.registeredAt,
+    exitDate: status === "Concluída" || status === "Resolvido" ? date : "",
+    status: status || "Registrada",
+    solution: status || "",
+    cost: 0
+  })));
+}
+
+function deriveInventoryMovements(assets, maintenances) {
+  const movements = [];
+  assets.forEach((asset) => {
+    movements.push({
+      id: `MOV-${asset.id}-created`,
+      assetId: asset.id,
+      type: "Criação",
+      text: `${asset.name} cadastrado no setor ${asset.sector}.`,
+      actor: "Sistema",
+      createdAt: asset.registeredAt || asset.acquiredAt || new Date().toISOString()
+    });
+    if (asset.loan) {
+      movements.push({
+        id: `MOV-${asset.id}-loan`,
+        assetId: asset.id,
+        type: "Empréstimo",
+        text: `${asset.name} emprestado para ${asset.loan.person || asset.user || "responsável"}.`,
+        actor: "Sistema",
+        createdAt: asset.loan.start || asset.registeredAt || new Date().toISOString()
+      });
+    }
+  });
+  maintenances.forEach((item) => movements.push({
+    id: `MOV-${item.id}`,
+    assetId: item.assetId,
+    type: "Manutenção",
+    text: `${item.assetName}: ${item.problem}`,
+    actor: item.technician || "Equipe de TI",
+    createdAt: item.entryDate || new Date().toISOString(),
+    maintenanceId: item.id
+  }));
+  return movements.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
 function applyWorkspaceData(data) {
   const seed = clone(window.SolveDeskSeed);
   const payload = data || {};
   state.problems = Array.isArray(payload.problems) ? payload.problems : seed.problems;
-  state.assets = Array.isArray(payload.assets) ? payload.assets : seed.assets;
   state.categories = Array.isArray(payload.categories) ? payload.categories : seed.categories;
   state.sectors = Array.isArray(payload.sectors) ? payload.sectors : seed.sectors;
   state.roles = Array.isArray(payload.roles) ? payload.roles : seed.roles;
+  state.assets = (Array.isArray(payload.assets) ? payload.assets : seed.assets).map(normalizeAsset);
+  const sectorNames = unique([
+    ...state.sectors,
+    ...state.assets.map((asset) => asset.sector),
+    "Estoque TI"
+  ]);
+  state.inventorySectors = deriveInventorySectors(sectorNames, Array.isArray(payload.inventorySectors) ? payload.inventorySectors : seed.inventorySectors);
+  state.assetMaintenances = Array.isArray(payload.assetMaintenances) ? payload.assetMaintenances : (seed.assetMaintenances || deriveAssetMaintenances(state.assets));
+  state.inventoryMovements = Array.isArray(payload.inventoryMovements) ? payload.inventoryMovements : (seed.inventoryMovements || deriveInventoryMovements(state.assets, state.assetMaintenances));
   state.users = Array.isArray(payload.users) ? payload.users : seed.users;
   state.checklists = payload.checklists && typeof payload.checklists === "object" ? payload.checklists : seed.checklists;
   state.activeRole = payload.activeRole || "manager";
+  state.inventoryView = payload.inventoryView || "map";
+  state.selectedInventorySector = payload.selectedInventorySector || "";
 }
 
 async function loadState() {
@@ -382,10 +536,15 @@ function metrics() {
   const averageTime = totalProblems ? Math.round(state.problems.reduce((sum, item) => sum + Number(item.timeSpent || 0), 0) / totalProblems) : 0;
   const topCategory = topEntry(countBy(state.problems, (item) => item.category))[0];
   const topClient = topEntry(countBy(state.problems, (item) => item.client))[0];
-  const totalAssets = state.assets.length;
+  const totalAssets = state.assets.reduce((sum, item) => sum + Number(item.quantity || 1), 0);
   const assetsInUse = state.assets.filter((item) => ["Em uso", "Emprestado"].includes(item.status)).length;
   const assetsAvailable = state.assets.reduce((sum, item) => sum + Number(item.available || (item.status === "Disponível" ? 1 : 0)), 0);
   const assetsAttention = state.assets.filter((item) => ["Com defeito", "Em manutenção", "Aguardando peça"].includes(item.status) || item.condition === "Crítico").length;
+  const assetsMaintenance = state.assets.filter((item) => ["Em manutenção", "Com defeito", "Aguardando peça"].includes(item.status)).length;
+  const lowStockAssets = state.assets.filter((item) => Number(item.available || 0) < Number(item.minStock || 0)).length;
+  const sectorHotspot = topEntry(countBy(state.problems.filter((item) => !["Resolvido", "Validado", "Arquivado"].includes(item.status)), (item) => item.sector))[0];
+  const problematicAsset = topEntry(countBy(state.problems.filter((item) => item.assetId), (item) => item.assetId))[0];
+  const problematicAssetName = state.assets.find((asset) => asset.id === problematicAsset)?.name || "Sem histórico";
   const productivity = totalProblems ? Math.round((resolvedProblems / totalProblems) * 100) : 0;
 
   return {
@@ -401,6 +560,10 @@ function metrics() {
     assetsInUse,
     assetsAvailable,
     assetsAttention,
+    assetsMaintenance,
+    lowStockAssets,
+    sectorHotspot,
+    problematicAssetName,
     productivity
   };
 }
@@ -456,25 +619,44 @@ function renderDashboard() {
   const pendingPct = m.totalProblems ? solvedPct + Math.round((m.pendingProblems / m.totalProblems) * 100) : 0;
 
   $("#view-dashboard").innerHTML = `
-    ${pageHead("central de comando", "Dashboard operacional", "Chamados, soluções, inventário e produtividade em um só painel.", `
-      <button class="ghost-btn ripple-btn" type="button" data-route-jump="insights"><span data-icon="spark"></span>Ver insights</button>
-    `)}
+    ${pageHead("central de comando", "Dashboard operacional", "Chamados, soluções, inventário e produtividade em um só painel.")}
     <section class="kpi-grid">
       ${metricCard("Problemas registrados", m.totalProblems, "Base completa", "var(--teal)")}
       ${metricCard("Soluções concluídas", m.resolvedProblems, `${m.productivity}% de resolução`, "var(--green)", [35, 88, 60, 96])}
       ${metricCard("Problemas em aberto", m.pendingProblems, "Ainda em fluxo", "var(--amber)", [42, 56, 48, 70])}
       ${metricCard("Urgentes", m.urgentProblems, "Alta ou crítica", "var(--red)", [64, 40, 78, 92])}
     </section>
-    <section class="dashboard-grid">
-      <article class="glass-panel orbit-panel reveal">
-        <div class="system-orbit">
-          <div class="orbit-core"><span><strong>${m.productivity}%</strong><small>produtividade</small></span></div>
-          <div class="orbit-node">Chamados</div>
-          <div class="orbit-node">Soluções</div>
-          <div class="orbit-node">Recursos</div>
-          <div class="orbit-node">Insights</div>
-          <div class="orbit-node">Relatórios</div>
-          <div class="orbit-node">Base viva</div>
+    <section class="kpi-grid suite-kpis">
+      ${metricCard("Total de recursos", m.totalAssets, "Inventário mapeado", "var(--blue)")}
+      ${metricCard("Disponíveis", m.assetsAvailable, "Prontos para uso", "var(--green)")}
+      ${metricCard("Em uso", m.assetsInUse, "Alocados ou emprestados", "var(--violet)")}
+      ${metricCard("Em manutenção", m.assetsMaintenance, "Aguardando ação técnica", "var(--red)")}
+    </section>
+    <section class="kpi-grid suite-kpis">
+      ${metricCard("Estoque baixo", m.lowStockAssets, "Reposição necessária", "var(--amber)")}
+      ${metricCard("Setor com mais chamados", m.sectorHotspot, "Pendências abertas", "var(--blue)")}
+      ${metricCard("Equipamento problemático", m.problematicAssetName, "Maior histórico vinculado", "var(--red)")}
+      ${metricCard("Setores mapeados", state.inventorySectors.length, "Mapa físico ativo", "var(--teal)")}
+    </section>
+    <section class="dashboard-grid suite-dashboard">
+      <article class="glass-panel reveal suite-chart-panel">
+        <div class="panel-head">
+          <div><span class="panel-kicker">evolução de chamados</span><h2>Registrados x resolvidos</h2></div>
+          <span class="tag">Últimos 6 meses</span>
+        </div>
+        <div class="suite-combo-chart">
+          ${monthly.map((row) => `
+            <div class="suite-month">
+              <span class="suite-bar registered" style="height:${Math.max(14, row.problems * 18)}px"></span>
+              <span class="suite-bar resolved" style="height:${Math.max(12, row.solutions * 18)}px"></span>
+              <small>${escapeHtml(row.month)}</small>
+            </div>
+          `).join("")}
+        </div>
+        <div class="suite-summary-list">
+          <div><small>Total registrados</small><strong>${m.totalProblems}</strong><span>+12,5%</span></div>
+          <div><small>Total resolvidos</small><strong>${m.resolvedProblems}</strong><span>+18,3%</span></div>
+          <div><small>Taxa de resolução</small><strong>${m.productivity}%</strong><span>+4,1 p.p.</span></div>
         </div>
       </article>
       <article class="glass-panel reveal">
@@ -491,7 +673,7 @@ function renderDashboard() {
         </div>
       </article>
     </section>
-    <section class="content-grid">
+    <section class="content-grid suite-lower-grid">
       <article class="glass-panel reveal">
         <div class="panel-head"><div><span class="panel-kicker">evolução</span><h2>Chamados por mês</h2></div></div>
         <div class="chart-bars">
@@ -570,21 +752,29 @@ function filterProblems(source = state.problems, filters = state.filters.problem
 
 function renderProblems() {
   const filtered = filterProblems();
+  const m = metrics();
+  const resolvedRate = m.totalProblems ? Math.round((m.resolvedProblems / m.totalProblems) * 100) : 0;
+  const topCategories = Object.entries(countBy(state.problems, (problem) => problem.category)).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const maxCat = Math.max(1, ...topCategories.map(([, value]) => value));
   $("#view-problems").innerHTML = `
     ${pageHead("gestão de chamados", "Problemas e soluções", "Cada chamado resolvido vira memória coletiva da equipe.", `
       <button class="primary-btn ripple-btn" type="button" data-open-modal="problemModal"><span data-icon="plus"></span>Cadastrar problema</button>
     `)}
+    <section class="kpi-grid suite-kpis">
+      ${metricCard("Problemas registrados", m.totalProblems, "+12% vs. mês anterior", "var(--blue)")}
+      ${metricCard("Em aberto", m.pendingProblems, "+8% vs. mês anterior", "var(--violet)", [35, 68, 50, 82])}
+      ${metricCard("Solucionados", m.resolvedProblems, "+15% vs. mês anterior", "var(--green)", [48, 72, 84, 96])}
+      ${metricCard("Urgentes", m.urgentProblems, "-5% vs. mês anterior", "var(--red)", [78, 52, 64, 46])}
+    </section>
     ${problemToolbar()}
-    <section class="board-layout">
-      <div>
-        <div class="problem-grid">
-          ${filtered.map(problemCard).join("") || `<div class="empty-state">Nenhum problema encontrado.</div>`}
+    <section class="board-layout suite-workspace">
+      <article class="glass-panel reveal suite-table-panel">
+        <div class="panel-head">
+          <div><span class="panel-kicker">problemas registrados</span><h2>Registros detalhados <span class="tag">${filtered.length} resultados</span></h2></div>
+          <button class="ghost-btn ripple-btn" type="button"><span data-icon="dashboard"></span>Visualização</button>
         </div>
-        <article class="glass-panel reveal" style="margin-top:16px">
-          <div class="panel-head"><div><span class="panel-kicker">tabela avançada</span><h2>Registros detalhados</h2></div></div>
-          ${problemTable(filtered)}
-        </article>
-      </div>
+        ${problemTable(filtered)}
+      </article>
       <aside class="side-panel">
         <article class="glass-panel reveal">
           <div class="panel-head"><div><span class="panel-kicker">recorrência</span><h2>Problemas parecidos</h2></div></div>
@@ -594,7 +784,25 @@ function renderProblems() {
           <div class="panel-head"><div><span class="panel-kicker">checklist</span><h2>Resolução por categoria</h2></div></div>
           ${checklistBox(state.filters.problems.category === "Todos" ? "Rede e internet" : state.filters.problems.category)}
         </article>
+        <article class="glass-panel reveal">
+          <div class="panel-head"><div><span class="panel-kicker">categorias</span><h2>Mais recorrentes</h2></div></div>
+          <div class="category-bars">${topCategories.map(([label, value]) => barRow(label, value, maxCat)).join("")}</div>
+        </article>
       </aside>
+    </section>
+    <section class="content-grid suite-lower-grid">
+      <article class="glass-panel reveal">
+        <div class="panel-head"><div><span class="panel-kicker">evolução</span><h2>Evolução de problemas</h2></div></div>
+        <div class="chart-bars">${periodData().map((row) => barRow(row.month, row.problems, Math.max(1, ...periodData().map((item) => item.problems)))).join("")}</div>
+      </article>
+      <article class="glass-panel reveal suite-score-card">
+        <div class="panel-head"><div><span class="panel-kicker">resolução</span><h2>Taxa de resolução</h2></div></div>
+        <div class="suite-ring" style="--value:${resolvedRate}%"><strong>${resolvedRate}%</strong><small>no prazo</small></div>
+      </article>
+      <article class="glass-panel reveal">
+        <div class="panel-head"><div><span class="panel-kicker">sla</span><h2>SLA por categoria</h2></div></div>
+        <div class="category-bars">${topCategories.map(([label, value]) => barRow(label, Math.max(65, 98 - value * 4), 100)).join("")}</div>
+      </article>
     </section>
   `;
 }
@@ -737,35 +945,50 @@ function renderKnowledge() {
       </div>
     </div>
     <section class="knowledge-layout">
-      <div class="knowledge-grid">
-        ${articles.map((problem) => `
-          <article class="knowledge-card reveal">
-            <div class="card-title">
-              <span class="card-eyebrow">${escapeHtml(problem.category)} · ${escapeHtml(problem.solutionState)}</span>
-              <h3>${escapeHtml(problem.title)}</h3>
-              <p>${escapeHtml(problem.solution)}</p>
-            </div>
-            <div class="detail-section">
-              <h3>Como identificar</h3>
-              <p class="detail-text">${escapeHtml(problem.symptoms)}</p>
-            </div>
-            <div class="detail-section">
-              <h3>Como evitar</h3>
-              <p class="detail-text">${escapeHtml(problem.prevention)}</p>
-            </div>
-            <div class="inline-actions">
-              <button class="ghost-btn ripple-btn" type="button" data-open-problem="${problem.id}"><span data-icon="book"></span>Abrir artigo</button>
-              <button class="copy-btn ripple-btn" type="button" data-learning="${problem.id}"><span data-icon="spark"></span>Modo aprendizado</button>
-            </div>
-          </article>
-        `).join("") || `<div class="empty-state">Nenhum artigo encontrado.</div>`}
-      </div>
+      <article class="glass-panel reveal suite-table-panel">
+        <div class="panel-head">
+          <div><span class="panel-kicker">biblioteca de artigos</span><h2>Artigos publicados <span class="tag">${articles.length} itens</span></h2></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Artigo</th><th>Categoria</th><th>Cliente</th><th>Responsável</th><th>Visualizações</th><th>Status</th><th>Urgência</th><th>Ação</th></tr></thead>
+            <tbody>
+              ${articles.map((problem) => `
+                <tr>
+                  <td><strong>${escapeHtml(problem.title)}</strong><br><small>${escapeHtml(problem.solution || "").slice(0, 82)}${String(problem.solution || "").length > 82 ? "..." : ""}</small></td>
+                  <td>${escapeHtml(problem.category)}</td>
+                  <td>${escapeHtml(problem.client)}</td>
+                  <td>${escapeHtml(problem.owner)}</td>
+                  <td>${problem.accesses}</td>
+                  <td><span class="status-chip ${statusClass(problem.status)}">${escapeHtml(problem.status)}</span></td>
+                  <td><span class="badge ${urgencyClass(problem.urgency)}">${escapeHtml(problem.urgency)}</span></td>
+                  <td><button class="mini-action ripple-btn" type="button" data-open-problem="${problem.id}"><span data-icon="eye"></span></button></td>
+                </tr>
+              `).join("") || `<tr><td colspan="8">Nenhum artigo encontrado.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </article>
       <aside class="side-panel">
         <article class="glass-panel reveal">
           <div class="panel-head"><div><span class="panel-kicker">mais usadas</span><h2>Soluções rápidas</h2></div></div>
           <div class="list-stack">${[...articles].sort((a, b) => b.accesses - a.accesses).slice(0, 5).map(compactProblemRow).join("")}</div>
         </article>
+        <article class="glass-panel reveal">
+          <div class="panel-head"><div><span class="panel-kicker">tags</span><h2>Tags recorrentes</h2></div></div>
+          <div class="chip-row">${unique(articles.flatMap((item) => item.tags || [])).slice(0, 10).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}</div>
+        </article>
       </aside>
+    </section>
+    <section class="content-grid suite-lower-grid">
+      <article class="glass-panel reveal">
+        <div class="panel-head"><div><span class="panel-kicker">acessos</span><h2>Artigos mais acessados</h2></div></div>
+        <div class="category-bars">${[...articles].sort((a, b) => b.accesses - a.accesses).slice(0, 5).map((item) => barRow(item.title, item.accesses, Math.max(1, ...articles.map((article) => article.accesses)))).join("")}</div>
+      </article>
+      <article class="glass-panel reveal suite-score-card">
+        <div class="panel-head"><div><span class="panel-kicker">distribuição</span><h2>Por categoria</h2></div></div>
+        <div class="suite-ring" style="--value:82%"><strong>${articles.length}</strong><small>artigos</small></div>
+      </article>
     </section>
   `;
 }
@@ -774,7 +997,7 @@ function filterAssets() {
   const filters = state.filters.inventory;
   const query = normalize([filters.query, state.globalQuery].filter(Boolean).join(" "));
   return state.assets.filter((asset) => {
-    const haystack = normalize([asset.name, asset.type, asset.code, asset.brand, asset.model, asset.sector, asset.user, asset.status, asset.condition, asset.notes].join(" "));
+    const haystack = normalize([asset.name, asset.type, asset.code, asset.location, asset.deskRoom, asset.brand, asset.model, asset.sector, asset.user, asset.status, asset.condition, asset.notes].join(" "));
     const ownerMatches = filters.owner === "Todos"
       || (filters.owner === "Sem responsável" ? !asset.user : asset.user === filters.owner);
     return (!query || haystack.includes(query))
@@ -785,42 +1008,41 @@ function filterAssets() {
   });
 }
 
-function renderInventory() {
-  const filtered = filterAssets();
-  const totalQty = state.assets.reduce((sum, asset) => sum + Number(asset.quantity || 1), 0);
+function inventorySubnav() {
+  const tabs = [
+    ["resources", "Recursos"],
+    ["sectors", "Setores"],
+    ["map", "Mapa físico"],
+    ["loans", "Empréstimos"],
+    ["maintenance", "Manutenções"],
+    ["lowStock", "Estoque baixo"]
+  ];
+  return `
+    <nav class="inventory-tabs reveal" aria-label="Subáreas do inventário">
+      ${tabs.map(([id, label]) => `<button class="tab-pill ${state.inventoryView === id ? "active" : ""}" type="button" data-inventory-view="${id}">${label}</button>`).join("")}
+    </nav>
+  `;
+}
+
+function inventorySummaryData() {
   const lowStock = state.assets.filter((asset) => Number(asset.available || 0) < Number(asset.minStock || 0));
   const maintenance = state.assets.filter((asset) => ["Em manutenção", "Com defeito", "Aguardando peça"].includes(asset.status) || asset.condition === "Crítico");
   const borrowed = state.assets.filter((asset) => asset.status === "Emprestado");
+  const totalQty = state.assets.reduce((sum, asset) => sum + Number(asset.quantity || 1), 0);
+  return { lowStock, maintenance, borrowed, totalQty };
+}
 
-  $("#view-inventory").innerHTML = `
-    ${pageHead("inventário de ti", "Mapa vivo dos recursos", "Equipamentos, acessórios, manutenção, empréstimos e chamados vinculados.", `
-      <button class="primary-btn ripple-btn" type="button" data-open-modal="assetModal"><span data-icon="plus"></span>Cadastrar recurso</button>
-    `)}
-    <section class="inventory-summary">
-      ${metricCard("Itens cadastrados", totalQty, "Quantidade total", "var(--blue)")}
-      ${metricCard("Disponíveis", state.assets.reduce((sum, item) => sum + Number(item.available || 0), 0), "Prontos para uso", "var(--green)")}
-      ${metricCard("Manutenção", maintenance.length, "Defeito ou atenção", "var(--red)")}
-      ${metricCard("Estoque baixo", lowStock.length, "Reposição sugerida", "var(--amber)")}
-    </section>
-    <div class="toolbar-panel reveal">
-      <label class="search-field"><span class="table-label">Buscar recurso</span><input data-inventory-filter="query" value="${escapeHtml(state.filters.inventory.query)}" placeholder="monitor, cabo, notebook"></label>
-      <div class="filter-row">
-        ${selectFilter("Tipo", "type", ["Todos", ...unique(state.assets.map((asset) => asset.type))], state.filters.inventory.type, "inventory")}
-        ${selectFilter("Setor", "sector", ["Todos", ...unique(state.assets.map((asset) => asset.sector))], state.filters.inventory.sector, "inventory")}
-        ${selectFilter("Status", "status", ["Todos", "Disponível", "Em uso", "Em manutenção", "Com defeito", "Reservado", "Emprestado", "Descartado", "Aguardando compra", "Aguardando peça", "Substituído"], state.filters.inventory.status, "inventory")}
-        ${selectFilter("Responsável", "owner", ["Todos", ...unique(state.assets.map((asset) => asset.user || "Sem responsável"))], state.filters.inventory.owner, "inventory")}
-      </div>
-    </div>
+function renderInventoryResources(filtered) {
+  const { lowStock, maintenance, borrowed } = inventorySummaryData();
+  return `
     <section class="inventory-layout">
-      <div>
-        <div class="asset-grid">
-          ${filtered.map(assetCard).join("") || `<div class="empty-state">Nenhum recurso encontrado.</div>`}
+      <article class="glass-panel reveal suite-table-panel">
+        <div class="panel-head">
+          <div><span class="panel-kicker">recursos cadastrados</span><h2>Mapa de ativos <span class="tag">${filtered.length} registros</span></h2></div>
+          <button class="ghost-btn ripple-btn" type="button"><span data-icon="excel"></span>Exportar CSV</button>
         </div>
-        <article class="glass-panel reveal" style="margin-top:16px">
-          <div class="panel-head"><div><span class="panel-kicker">tabela avançada</span><h2>Recursos cadastrados</h2></div></div>
-          ${assetTable(filtered)}
-        </article>
-      </div>
+        ${assetTable(filtered)}
+      </article>
       <aside class="side-panel">
         <article class="glass-panel reveal">
           <div class="panel-head"><div><span class="panel-kicker">alertas</span><h2>Inventário inteligente</h2></div></div>
@@ -828,6 +1050,205 @@ function renderInventory() {
         </article>
       </aside>
     </section>
+    <section class="content-grid suite-lower-grid">
+      <article class="glass-panel reveal suite-score-card">
+        <div class="panel-head"><div><span class="panel-kicker">distribuição</span><h2>Por categoria</h2></div></div>
+        <div class="suite-ring" style="--value:76%"><strong>${state.assets.length}</strong><small>tipos</small></div>
+      </article>
+      <article class="glass-panel reveal">
+        <div class="panel-head"><div><span class="panel-kicker">manutenção</span><h2>Manutenção por período</h2></div></div>
+        <div class="chart-bars">${periodData().map((row) => barRow(row.month, Math.max(1, Math.round(row.problems / 2)), Math.max(1, ...periodData().map((item) => item.problems)))).join("")}</div>
+      </article>
+      <article class="glass-panel reveal">
+        <div class="panel-head"><div><span class="panel-kicker">movimentações</span><h2>Movimentações recentes</h2></div></div>
+        <div class="list-stack">${movementList(4)}</div>
+      </article>
+    </section>
+  `;
+}
+
+function renderInventorySectors() {
+  return `
+    <section class="inventory-layout">
+      <article class="glass-panel reveal">
+        <div class="panel-head"><div><span class="panel-kicker">cadastro de setores</span><h2>Setores mapeados</h2></div></div>
+        <form class="settings-form sector-form" id="sectorForm">
+          <label class="form-group"><span>Nome do setor</span><input name="name" placeholder="Ex.: Produção" required></label>
+          <label class="form-group"><span>Responsável pelo setor</span><input name="owner" placeholder="Nome do responsável"></label>
+          <label class="form-group"><span>Localização física</span><input name="location" placeholder="Prédio, piso, sala ou área"></label>
+          <label class="form-group full"><span>Descrição</span><textarea name="description" placeholder="Descreva a função do setor"></textarea></label>
+          <button class="primary-btn ripple-btn" type="submit"><span data-icon="plus"></span>Novo setor</button>
+        </form>
+        <div class="sector-grid">${state.inventorySectors.map(sectorCard).join("")}</div>
+      </article>
+      <aside class="side-panel">
+        <article class="glass-panel reveal">
+          <div class="panel-head"><div><span class="panel-kicker">resumo</span><h2>Setorização</h2></div></div>
+          <div class="list-stack">${state.inventorySectors.slice(0, 6).map((sector) => {
+            const stats = inventorySectorStats(sector.name);
+            return `<div class="compact-row"><div><h3>${escapeHtml(sector.name)}</h3><p>${stats.resources} recursos · ${stats.openProblems.length} chamados abertos</p></div><span class="tag">${escapeHtml(sector.owner)}</span></div>`;
+          }).join("")}</div>
+        </article>
+      </aside>
+    </section>
+  `;
+}
+
+function sectorCard(sector) {
+  const stats = inventorySectorStats(sector.name);
+  const status = stats.lowStock.length ? "Crítico" : stats.maintenance.length ? "Atenção" : "Normal";
+  return `
+    <button class="sector-card reveal ripple-btn" type="button" data-select-sector="${escapeHtml(sector.name)}">
+      <span class="sector-icon" data-icon="monitor"></span>
+      <strong>${escapeHtml(sector.name)}</strong>
+      <small>${escapeHtml(sector.location || "Sem localização")}</small>
+      <div class="sector-stats">
+        <span><b>${stats.resources}</b>Recursos</span>
+        <span><b>${stats.openProblems.length}</b>Chamados</span>
+        <span><b>${stats.maintenance.length}</b>Manutenção</span>
+      </div>
+      <em class="${status === "Normal" ? "status-resolved" : status === "Atenção" ? "status-loan" : "status-critical"}">${status}</em>
+    </button>
+  `;
+}
+
+function renderInventoryMap() {
+  const selected = state.selectedInventorySector || topEntry(countBy(state.assets, (asset) => asset.sector))[0] || state.inventorySectors[0]?.name || "";
+  const selectedStats = inventorySectorStats(selected);
+  return `
+    <section class="map-layout">
+      <article class="glass-panel reveal physical-map-panel">
+        <div class="panel-head">
+          <div><span class="panel-kicker">mapa dos setores</span><h2>Mapa físico</h2></div>
+          <span class="tag">Clique em um setor</span>
+        </div>
+        <div class="physical-map">
+          ${state.inventorySectors.map(sectorCard).join("")}
+        </div>
+      </article>
+      <aside class="side-panel">
+        <article class="glass-panel reveal">
+          <div class="panel-head"><div><span class="panel-kicker">setor selecionado</span><h2>${escapeHtml(selected || "Nenhum setor")}</h2></div></div>
+          <div class="list-stack">
+            ${selectedStats.assets.map((asset) => `<button class="compact-row ripple-btn" type="button" data-open-asset="${asset.id}"><div><h3>${escapeHtml(asset.name)}</h3><p>${escapeHtml(asset.type)} · ${escapeHtml(asset.location || asset.storage || asset.sector)}</p></div><span class="status-chip ${statusClass(asset.status)}">${escapeHtml(asset.status)}</span></button>`).join("") || `<div class="empty-state">Nenhum recurso vinculado.</div>`}
+          </div>
+        </article>
+      </aside>
+    </section>
+  `;
+}
+
+function renderInventoryLoans() {
+  const borrowed = state.assets.filter((asset) => asset.status === "Emprestado" || asset.loan);
+  return `
+    <article class="glass-panel reveal suite-table-panel">
+      <div class="panel-head"><div><span class="panel-kicker">empréstimos</span><h2>Recursos emprestados <span class="tag">${borrowed.length} ativos</span></h2></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Recurso</th><th>Patrimônio</th><th>Pessoa</th><th>Setor</th><th>Retirada</th><th>Devolução</th><th>Condição</th><th>Ação</th></tr></thead>
+          <tbody>${borrowed.map((asset) => `<tr><td>${escapeHtml(asset.name)}</td><td>${escapeHtml(asset.code)}</td><td>${escapeHtml(asset.loan?.person || asset.user || "Sem responsável")}</td><td>${escapeHtml(asset.loan?.sector || asset.sector)}</td><td>${formatDate(asset.loan?.start || asset.registeredAt)}</td><td>${formatDate(asset.loan?.due || "")}</td><td>${escapeHtml(asset.loan?.outCondition || asset.condition)}</td><td><button class="mini-action ripple-btn" type="button" data-open-asset="${asset.id}"><span data-icon="eye"></span></button></td></tr>`).join("") || `<tr><td colspan="8">Nenhum empréstimo ativo.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+function renderInventoryMaintenance() {
+  return `
+    <section class="inventory-layout">
+      <article class="glass-panel reveal suite-table-panel">
+        <div class="panel-head"><div><span class="panel-kicker">manutenções</span><h2>Ordens de manutenção <span class="tag">${state.assetMaintenances.length} registros</span></h2></div></div>
+        ${maintenanceTable()}
+      </article>
+      <aside class="side-panel">
+        <article class="glass-panel reveal">
+          <div class="panel-head"><div><span class="panel-kicker">novo registro</span><h2>Enviar para manutenção</h2></div></div>
+          <form class="settings-form" id="maintenanceForm">
+            <label class="form-group"><span>Recurso</span><select name="assetId" required>${state.assets.map((asset) => `<option value="${asset.id}">${escapeHtml(asset.name)} - ${escapeHtml(asset.code)}</option>`).join("")}</select></label>
+            <label class="form-group"><span>Problema relatado</span><input name="problem" required></label>
+            <label class="form-group"><span>Técnico responsável</span><input name="technician" value="${escapeHtml(role().name)}"></label>
+            <label class="form-group"><span>Data de entrada</span><input name="entryDate" type="date" value="${new Date().toISOString().slice(0, 10)}"></label>
+            <label class="form-group"><span>Data de saída</span><input name="exitDate" type="date"></label>
+            <label class="form-group"><span>Status</span><select name="status"><option>Em andamento</option><option>Aguardando peça</option><option>Concluída</option><option>Cancelada</option></select></label>
+            <label class="form-group"><span>Custo</span><input name="cost" type="number" min="0" step="0.01" value="0"></label>
+            <label class="form-group full"><span>Solução aplicada</span><textarea name="solution"></textarea></label>
+            <button class="primary-btn ripple-btn" type="submit"><span data-icon="plus"></span>Registrar manutenção</button>
+          </form>
+        </article>
+      </aside>
+    </section>
+  `;
+}
+
+function maintenanceTable() {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Recurso</th><th>Problema</th><th>Técnico</th><th>Entrada</th><th>Saída</th><th>Status</th><th>Solução</th><th>Custo</th></tr></thead>
+        <tbody>${state.assetMaintenances.map((item) => {
+          const asset = state.assets.find((asset) => asset.id === item.assetId);
+          return `<tr><td>${escapeHtml(asset?.name || item.assetName || "Recurso removido")}</td><td>${escapeHtml(item.problem)}</td><td>${escapeHtml(item.technician)}</td><td>${formatDate(item.entryDate)}</td><td>${formatDate(item.exitDate)}</td><td><span class="status-chip ${statusClass(item.status)}">${escapeHtml(item.status)}</span></td><td>${escapeHtml(item.solution || "-")}</td><td>${Number(item.cost || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</td></tr>`;
+        }).join("") || `<tr><td colspan="8">Nenhuma manutenção registrada.</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderInventoryLowStock() {
+  const lowStock = state.assets.filter((asset) => Number(asset.available || 0) < Number(asset.minStock || 0));
+  return `
+    <article class="glass-panel reveal suite-table-panel">
+      <div class="panel-head"><div><span class="panel-kicker">estoque crítico</span><h2>Itens com estoque baixo <span class="tag">${lowStock.length} itens</span></h2></div></div>
+      ${assetTable(lowStock)}
+    </article>
+  `;
+}
+
+function movementList(limit = 8, assetId = "") {
+  const source = (assetId ? state.inventoryMovements.filter((item) => item.assetId === assetId) : state.inventoryMovements).slice(0, limit);
+  return source.map((item) => `<div class="timeline-item"><strong>${escapeHtml(item.text)}</strong><small>${formatDate(item.createdAt)} · ${escapeHtml(item.actor || "Sistema")}</small>${escapeHtml(item.type || "Movimentação")}</div>`).join("") || `<div class="timeline-item"><strong>Sem movimentações</strong><small>Histórico vazio</small>Nenhum evento registrado ainda.</div>`;
+}
+
+function renderInventory() {
+  const filtered = filterAssets();
+  const { lowStock, maintenance, totalQty } = inventorySummaryData();
+  const content = {
+    resources: renderInventoryResources(filtered),
+    sectors: renderInventorySectors(),
+    map: renderInventoryMap(),
+    loans: renderInventoryLoans(),
+    maintenance: renderInventoryMaintenance(),
+    lowStock: renderInventoryLowStock()
+  }[state.inventoryView] || renderInventoryMap();
+
+  $("#view-inventory").innerHTML = `
+    ${pageHead("inventário de ti", "Mapeamento e setorização", "Mapa vivo dos setores, recursos, manutenção e distribuição dos ativos de TI.", `
+      <button class="ghost-btn ripple-btn" type="button" data-inventory-view="sectors"><span data-icon="plus"></span>Novo setor</button>
+      <button class="primary-btn ripple-btn" type="button" data-open-modal="assetModal"><span data-icon="plus"></span>Vincular recurso</button>
+    `)}
+    <section class="inventory-summary">
+      ${metricCard("Setores mapeados", state.inventorySectors.length, "100% ativos", "var(--blue)")}
+      ${metricCard("Recursos alocados", totalQty, "Recursos cadastrados", "var(--green)")}
+      ${metricCard("Em manutenção", maintenance.length, "Itens em atenção", "var(--red)")}
+      ${metricCard("Estoque crítico", lowStock.length, "Atenção necessária", "var(--amber)")}
+    </section>
+    <section class="inventory-summary inventory-compact-indicators">
+      ${metricCard("Disponíveis", state.assets.reduce((sum, item) => sum + Number(item.available || 0), 0), "Prontos para uso", "var(--green)")}
+      ${metricCard("Em uso", state.assets.filter((item) => ["Em uso", "Emprestado"].includes(item.status)).length, "Alocados ou emprestados", "var(--violet)")}
+      ${metricCard("Setor com mais chamados", metrics().sectorHotspot, "Chamados abertos vinculados", "var(--blue)")}
+      ${metricCard("Problemáticos", topEntry(countBy(state.problems.filter((problem) => problem.assetId), (problem) => problem.assetId))[1] || 0, metrics().problematicAssetName, "var(--red)")}
+    </section>
+    ${inventorySubnav()}
+    <div class="toolbar-panel reveal">
+      <label class="search-field"><span class="table-label">Buscar</span><input data-inventory-filter="query" value="${escapeHtml(state.filters.inventory.query)}" placeholder="setor, recurso, responsável ou localização"></label>
+      <div class="filter-row">
+        ${selectFilter("Tipo", "type", ["Todos", ...unique(state.assets.map((asset) => asset.type))], state.filters.inventory.type, "inventory")}
+        ${selectFilter("Setor", "sector", ["Todos", ...unique(state.inventorySectors.map((sector) => sector.name))], state.filters.inventory.sector, "inventory")}
+        ${selectFilter("Status", "status", ["Todos", "Disponível", "Em uso", "Em manutenção", "Com defeito", "Reservado", "Emprestado", "Descartado", "Aguardando compra", "Aguardando peça", "Substituído"], state.filters.inventory.status, "inventory")}
+        ${selectFilter("Responsável", "owner", ["Todos", ...unique(state.assets.map((asset) => asset.user || "Sem responsável"))], state.filters.inventory.owner, "inventory")}
+      </div>
+    </div>
+    ${content}
   `;
 }
 
@@ -863,7 +1284,7 @@ function assetTable(assets) {
   return `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Tipo</th><th>Nome</th><th>Patrimônio</th><th>Setor</th><th>Responsável</th><th>Status</th><th>Estado</th><th>Qtd.</th><th>Disponível</th><th>Ação</th></tr></thead>
+        <thead><tr><th>Tipo</th><th>Nome</th><th>Patrimônio</th><th>Setor</th><th>Localização</th><th>Mesa/Sala</th><th>Responsável</th><th>Status</th><th>Estado físico</th><th>Qtd.</th><th>Disp.</th><th>Últ. manutenção</th><th>Ação</th></tr></thead>
         <tbody>
           ${assets.map((asset) => `
             <tr>
@@ -871,14 +1292,18 @@ function assetTable(assets) {
               <td>${escapeHtml(asset.name)}</td>
               <td>${escapeHtml(asset.code)}</td>
               <td>${escapeHtml(asset.sector)}</td>
+              <td>${escapeHtml(asset.location || asset.storage || asset.sector)}</td>
+              <td>${escapeHtml(asset.deskRoom || "-")}</td>
               <td>${escapeHtml(asset.user || "Sem responsável")}</td>
               <td><span class="status-chip ${statusClass(asset.status)}">${escapeHtml(asset.status)}</span></td>
               <td>${escapeHtml(asset.condition)}</td>
               <td>${asset.quantity || 1}</td>
               <td>${asset.available || 0}</td>
+              <td>${formatDate(asset.lastMaintenance || asset.lastCheck)}</td>
               <td>
                 <div class="table-actions">
                   <button class="mini-action ripple-btn" type="button" data-open-asset="${asset.id}"><span data-icon="eye"></span></button>
+                  <button class="mini-action ripple-btn" type="button" data-edit-asset="${asset.id}"><span data-icon="settings"></span></button>
                   <button class="mini-action danger-mini ripple-btn" type="button" data-delete-asset="${asset.id}" aria-label="Excluir ${escapeHtml(asset.name)}">×</button>
                 </div>
               </td>
@@ -897,33 +1322,6 @@ function inventoryAlerts(lowStock, maintenance, borrowed) {
   borrowed.forEach((asset) => alerts.push([asset.name, `Emprestado para ${asset.loan?.person || asset.user || "responsável"} desde ${formatDate(asset.loan?.start)}.`]));
   state.assets.filter((asset) => !asset.user && asset.status !== "Disponível").forEach((asset) => alerts.push([asset.name, "Recurso sem responsável definido."]));
   return alerts.slice(0, 8).map(([title, text]) => `<div class="alert-item"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(text)}</small></div>`);
-}
-
-function renderInsights() {
-  const repeated = Object.entries(countBy(state.problems, (problem) => problem.category)).filter(([, total]) => total > 1);
-  const clientHotspot = topEntry(countBy(state.problems, (problem) => problem.client));
-  const obsolete = state.problems.filter((problem) => ["Obsoleta", "Precisa revisar"].includes(problem.solutionState));
-  const risk = state.problems.filter((problem) => problem.canRecur || problem.urgency === "Crítica");
-
-  $("#view-insights").innerHTML = `
-    ${pageHead("inteligência", "Insights", "Análises para encontrar recorrência, risco e oportunidades de procedimento.")}
-    <section class="insight-grid">
-      ${repeated.map(([category, total]) => insightCard("Problema recorrente", `Este tipo já aconteceu ${total} vezes na base.`, category, "alert")).join("")}
-      ${insightCard("Cliente/setor em atenção", `${clientHotspot[0]} concentra ${clientHotspot[1]} ocorrência${clientHotspot[1] === 1 ? "" : "s"}.`, "Hotspot operacional", "spark")}
-      ${obsolete.map((problem) => insightCard("Solução precisa revisar", "Esta solução pode estar ficando obsoleta.", problem.title, "book")).join("")}
-      ${risk.slice(0, 4).map((problem) => insightCard("Risco de reincidência", "Este tipo de erro pode virar procedimento interno.", problem.title, "ticket")).join("")}
-    </section>
-  `;
-}
-
-function insightCard(title, text, subject, icon) {
-  return `
-    <article class="insight-card reveal">
-      <span class="card-eyebrow">${escapeHtml(subject)}</span>
-      <h3><span data-icon="${icon}"></span>${escapeHtml(title)}</h3>
-      <p>${escapeHtml(text)}</p>
-    </article>
-  `;
 }
 
 function renderReports() {
@@ -1144,24 +1542,94 @@ function deleteChecklistItem(category, index) {
   toast("Item removido", removed || category);
 }
 
+function addInventorySector(input) {
+  const name = String(input.name || "").trim();
+  if (!name) return;
+  const exists = state.inventorySectors.some((sector) => normalize(sector.name) === normalize(name));
+  if (exists) {
+    toast("Setor já existe", name);
+    return;
+  }
+  const sector = {
+    id: `SEC-${sectorSlug(name)}`,
+    name,
+    description: String(input.description || "").trim(),
+    owner: String(input.owner || "").trim() || role().name,
+    location: String(input.location || "").trim() || name,
+    createdAt: new Date().toISOString().slice(0, 10)
+  };
+  state.inventorySectors.push(sector);
+  state.sectors = unique([...state.sectors, name]);
+  state.selectedInventorySector = name;
+  saveState();
+  renderInventory();
+  injectIcons($("#view-inventory"));
+  observeReveals();
+  toast("Setor cadastrado", name);
+}
+
+function registerMaintenanceFromForm(form) {
+  const data = new FormData(form);
+  const asset = state.assets.find((item) => item.id === data.get("assetId"));
+  if (!asset) return;
+  const maintenance = {
+    id: `MNT-${Date.now()}`,
+    assetId: asset.id,
+    assetName: asset.name,
+    problem: String(data.get("problem") || "").trim(),
+    technician: String(data.get("technician") || "").trim() || role().name,
+    entryDate: data.get("entryDate"),
+    exitDate: data.get("exitDate"),
+    status: data.get("status"),
+    solution: String(data.get("solution") || "").trim(),
+    cost: Number(data.get("cost") || 0)
+  };
+  state.assetMaintenances.unshift(maintenance);
+  asset.maintenance = ensureArray(asset.maintenance);
+  asset.maintenance.unshift([maintenance.entryDate, maintenance.problem, maintenance.status]);
+  asset.status = maintenance.status === "Concluída" ? "Disponível" : "Em manutenção";
+  asset.lastMaintenance = maintenance.entryDate;
+  addMovement(asset.id, "Manutenção", `${asset.name}: ${maintenance.problem}`, { maintenanceId: maintenance.id });
+  saveState();
+  renderInventory();
+  injectIcons($("#view-inventory"));
+  observeReveals();
+  toast("Manutenção registrada", asset.name);
+}
+
 function renderSettings() {
+  const totalModels = Object.keys(state.checklists).length;
+  const totalItems = Object.values(state.checklists).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
   $("#view-settings").innerHTML = `
-    ${pageHead("configurações", "Categorias e checklists", "Taxonomia editável para adaptar a base ao processo da empresa.")}
-    <section class="settings-grid">
-      <article class="settings-card reveal">
+    ${pageHead("configurações", "Categorias e checklists", "Organize categorias e modelos de checklist para padronizar e otimizar os processos.")}
+    <section class="settings-grid settings-designer">
+      <article class="settings-card reveal settings-category-panel">
         <div class="panel-head"><div><span class="panel-kicker">categorias</span><h2>Cadastro de categorias</h2></div></div>
         <form class="settings-form" id="categoryForm">
-          <label class="form-group"><span>Nome da categoria</span><input name="category" placeholder="Ex: Backup, Telefonia, Acesso remoto" required></label>
-          <button class="primary-btn ripple-btn" type="submit"><span data-icon="plus"></span>Adicionar</button>
+          <label class="form-group"><span>Nome da categoria</span><input name="category" placeholder="Ex.: Backup, Telefonia, Acesso remoto, etc." required></label>
+          <button class="primary-btn ripple-btn" type="submit"><span data-icon="plus"></span>Adicionar categoria</button>
         </form>
         <div class="category-manager">${categoryCards()}</div>
       </article>
-      <article class="settings-card reveal">
-        <div class="panel-head"><div><span class="panel-kicker">checklists</span><h2>Novo modelo</h2></div></div>
+      <article class="settings-card reveal settings-model-panel">
+        <div class="panel-head"><div><span class="panel-kicker">checklists</span><h2>Novo modelo de checklist</h2></div></div>
+        <div class="settings-empty-hero">
+          <span data-icon="book"></span>
+          <h3>Comece criando um modelo</h3>
+          <p>Selecione uma categoria ou crie uma nova para adicionar itens e padronizar verificações.</p>
+          <div class="chip-row">
+            <span class="tag">${state.categories.length} categorias</span>
+            <span class="tag">${totalModels} modelos</span>
+            <span class="tag">${totalItems} itens</span>
+          </div>
+        </div>
         <form class="settings-form" id="checklistModelForm">
-          <label class="form-group"><span>Nome do modelo ou categoria</span><input name="model" placeholder="Ex: Backup, Hardware, ERP" required></label>
+          <label class="form-group"><span>Nome do modelo ou categoria</span><input name="model" placeholder="Ex.: Checklist de Backup Diário" required></label>
           <label class="form-group full"><span>Itens iniciais</span><textarea name="items" placeholder="Um item por linha ou separado por vÃ­rgula"></textarea></label>
-          <button class="primary-btn ripple-btn" type="submit"><span data-icon="plus"></span>Criar modelo</button>
+          <div class="inline-actions">
+            <button class="primary-btn ripple-btn" type="submit"><span data-icon="plus"></span>Criar novo modelo</button>
+            <button class="ghost-btn ripple-btn" type="reset">Cancelar</button>
+          </div>
         </form>
       </article>
       <article class="settings-card reveal full-span">
@@ -1176,13 +1644,19 @@ function renderSettings() {
   `;
 }
 
+function normalizeRoute(route) {
+  return ["dashboard", "problems", "knowledge", "inventory", "reports", "users", "settings"].includes(route)
+    ? route
+    : "dashboard";
+}
+
 function renderRoute() {
+  state.route = normalizeRoute(state.route);
   const renderers = {
     dashboard: renderDashboard,
     problems: renderProblems,
     knowledge: renderKnowledge,
     inventory: renderInventory,
-    insights: renderInsights,
     reports: renderReports,
     users: renderUsers,
     settings: renderSettings
@@ -1241,11 +1715,15 @@ function buildAssetForm(prefill = {}) {
     ${inputGroup("Número de série", "serial", prefill.serial, "third")}
     ${inputGroup("Marca", "brand", prefill.brand, "third")}
     ${inputGroup("Modelo", "model", prefill.model, "third")}
-    ${selectGroup("Setor", "sector", state.sectors.concat("Estoque TI"), prefill.sector || "Gestão de TI", "third")}
-    ${inputGroup("Usuário responsável", "user", prefill.user, "third")}
+    ${selectGroup("Setor", "sector", unique(state.inventorySectors.map((sector) => sector.name).concat(state.sectors, "Estoque TI")), prefill.sector || "Gestão de TI", "third")}
+    ${inputGroup("Localização física", "location", prefill.location || prefill.storage, "third", false, "text", "Prédio, área, rack ou almoxarifado")}
+    ${inputGroup("Mesa ou sala", "deskRoom", prefill.deskRoom, "third", false, "text", "Ex: Mesa 12, Sala TI")}
+    ${inputGroup("Responsável", "user", prefill.user || prefill.responsible, "third")}
+    ${inputGroup("Data de cadastro", "registeredAt", prefill.registeredAt || new Date().toISOString().slice(0, 10), "third", false, "date")}
     ${inputGroup("Data de aquisição", "acquiredAt", prefill.acquiredAt || new Date().toISOString().slice(0, 10), "third", false, "date")}
     ${selectGroup("Estado atual", "condition", ["Novo", "Bom", "Regular", "Ruim", "Crítico", "Inutilizável"], prefill.condition || "Bom", "third")}
     ${selectGroup("Status", "status", ["Disponível", "Em uso", "Em manutenção", "Com defeito", "Reservado", "Emprestado", "Descartado", "Aguardando compra", "Aguardando peça", "Substituído"], prefill.status || "Disponível", "third")}
+    ${inputGroup("Última manutenção", "lastMaintenance", prefill.lastMaintenance || prefill.lastCheck || new Date().toISOString().slice(0, 10), "third", false, "date")}
     ${inputGroup("Última verificação", "lastCheck", prefill.lastCheck || new Date().toISOString().slice(0, 10), "third", false, "date")}
     ${inputGroup("Previsão de troca", "replacementForecast", prefill.replacementForecast, "third", false, "date")}
     ${inputGroup("Quantidade total", "quantity", prefill.quantity || 1, "quarter", false, "number")}
@@ -1253,7 +1731,7 @@ function buildAssetForm(prefill = {}) {
     ${inputGroup("Quantidade em uso", "inUse", prefill.inUse || 0, "quarter", false, "number")}
     ${inputGroup("Quantidade com defeito", "defective", prefill.defective || 0, "quarter", false, "number")}
     ${inputGroup("Estoque mínimo", "minStock", prefill.minStock || 0, "third", false, "number")}
-    ${inputGroup("Local de armazenamento", "storage", prefill.storage, "third")}
+    ${inputGroup("Local de armazenamento", "storage", prefill.storage || prefill.location, "third")}
     ${inputGroup("Fotos do equipamento", "photos", Array.isArray(prefill.photos) ? prefill.photos.join(", ") : prefill.photos, "third")}
     ${inputGroup("Nota fiscal ou anexo", "invoice", prefill.invoice, "third")}
     ${textareaGroup("Observações", "notes", prefill.notes, "full")}
@@ -1346,9 +1824,14 @@ function formToAsset(form) {
     brand: data.get("brand").trim(),
     model: data.get("model").trim(),
     sector: data.get("sector"),
+    location: data.get("location").trim(),
+    deskRoom: data.get("deskRoom").trim(),
     user: data.get("user").trim(),
+    responsible: data.get("user").trim(),
+    registeredAt: data.get("registeredAt"),
     acquiredAt: data.get("acquiredAt"),
     condition: data.get("condition"),
+    physicalState: data.get("condition"),
     status: data.get("status"),
     notes: data.get("notes").trim(),
     photos: listFromText(data.get("photos")),
@@ -1357,13 +1840,15 @@ function formToAsset(form) {
     linkedProblems: [],
     tickets: [],
     lastCheck: data.get("lastCheck"),
+    lastMaintenance: data.get("lastMaintenance"),
     replacementForecast: data.get("replacementForecast"),
     quantity: Number(data.get("quantity") || 1),
     available: Number(data.get("available") || 0),
     inUse: Number(data.get("inUse") || 0),
     defective: Number(data.get("defective") || 0),
     minStock: Number(data.get("minStock") || 0),
-    storage: data.get("storage").trim()
+    storage: data.get("storage").trim(),
+    movementHistory: []
   };
 }
 
@@ -1473,6 +1958,7 @@ function openAssetDetail(id) {
   const asset = state.assets.find((item) => item.id === id);
   if (!asset) return;
   const linked = state.problems.filter((problem) => problem.assetId === asset.id || asset.linkedProblems.includes(problem.id));
+  const maintenances = state.assetMaintenances.filter((item) => item.assetId === asset.id);
   $("#assetDetailContent").innerHTML = `
     <header class="modal-header">
       <div>
@@ -1484,10 +1970,15 @@ function openAssetDetail(id) {
     </header>
     <div class="detail-grid">
       <div class="list-stack">
-        ${detailSection("Dados do recurso", `Marca/modelo: ${asset.brand} ${asset.model}<br>Série: ${asset.serial || "Sem série"}<br>Localização: ${asset.sector}<br>Responsável: ${asset.user || "Sem responsável"}<br>Aquisição: ${formatDate(asset.acquiredAt)}`, true)}
+        ${detailSection("Dados do recurso", `Tipo: ${asset.type}<br>Marca/modelo: ${asset.brand} ${asset.model}<br>Patrimônio: ${asset.code}<br>Série: ${asset.serial || "Sem série"}<br>Setor: ${asset.sector}<br>Localização: ${asset.location || asset.storage || asset.sector}<br>Mesa/Sala: ${asset.deskRoom || "-"}<br>Responsável: ${asset.user || "Sem responsável"}<br>Cadastro: ${formatDate(asset.registeredAt)}<br>Última manutenção: ${formatDate(asset.lastMaintenance || asset.lastCheck)}`, true)}
         ${detailSection("Observações", asset.notes || "Sem observações.")}
         <section class="detail-section"><h3>Histórico de chamados</h3><div class="list-stack">${linked.map(compactProblemRow).join("") || `<p class="detail-text">Nenhum chamado vinculado.</p>`}</div></section>
-        <section class="detail-section"><h3>Histórico de manutenção</h3><ol class="timeline-list">${asset.maintenance.map(([date, text, status], index) => `<li class="timeline-item" style="animation-delay:${index * 80}ms"><strong>${escapeHtml(text)}</strong><small>${formatDate(date)}</small>${escapeHtml(status)}</li>`).join("") || `<li class="timeline-item"><strong>Sem manutenção registrada</strong><small>${formatDate(asset.lastCheck)}</small>Última verificação concluída.</li>`}</ol></section>
+        <section class="detail-section"><h3>Histórico de manutenção</h3><ol class="timeline-list">${
+          maintenances.map((item, index) => `<li class="timeline-item" style="animation-delay:${index * 80}ms"><strong>${escapeHtml(item.problem)}</strong><small>${formatDate(item.entryDate)} · ${escapeHtml(item.technician)}</small>${escapeHtml(item.status)}${item.solution ? ` · ${escapeHtml(item.solution)}` : ""}</li>`).join("")
+          || asset.maintenance.map(([date, text, status], index) => `<li class="timeline-item" style="animation-delay:${index * 80}ms"><strong>${escapeHtml(text)}</strong><small>${formatDate(date)}</small>${escapeHtml(status)}</li>`).join("")
+          || `<li class="timeline-item"><strong>Sem manutenção registrada</strong><small>${formatDate(asset.lastCheck)}</small>Última verificação concluída.</li>`
+        }</ol></section>
+        <section class="detail-section"><h3>Linha do tempo de movimentação</h3><div class="timeline-list">${movementList(12, asset.id)}</div></section>
       </div>
       <aside class="list-stack">
         ${detailSection("Estoque", `Total: ${asset.quantity || 1}<br>Disponível: ${asset.available || 0}<br>Em uso: ${asset.inUse || 0}<br>Defeito: ${asset.defective || 0}<br>Estoque mínimo: ${asset.minStock || 0}`, true)}
@@ -1495,6 +1986,7 @@ function openAssetDetail(id) {
         <section class="detail-section">
           <h3>Ações rápidas</h3>
           <button class="primary-btn ripple-btn" type="button" data-create-ticket-from-asset="${asset.id}"><span data-icon="ticket"></span>Abrir chamado</button>
+          <button class="copy-btn ripple-btn" type="button" data-edit-asset="${asset.id}">Editar recurso</button>
           <button class="copy-btn ripple-btn" type="button" data-asset-maintenance="${asset.id}">Registrar manutenção</button>
           <button class="copy-btn ripple-btn" type="button" data-asset-transfer="${asset.id}">Transferir setor</button>
           <button class="danger-btn ripple-btn" type="button" data-asset-discard="${asset.id}">Marcar descartado</button>
@@ -1737,16 +2229,38 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const routeButton = event.target.closest("[data-route], [data-route-jump]");
     if (routeButton) {
-      state.route = routeButton.dataset.route || routeButton.dataset.routeJump;
+      state.route = normalizeRoute(routeButton.dataset.route || routeButton.dataset.routeJump);
       document.body.classList.remove("sidebar-open");
       renderRoute();
+      return;
+    }
+
+    const inventoryViewButton = event.target.closest("[data-inventory-view]");
+    if (inventoryViewButton) {
+      state.inventoryView = inventoryViewButton.dataset.inventoryView;
+      state.route = "inventory";
+      renderRoute();
+      return;
+    }
+
+    const sectorButton = event.target.closest("[data-select-sector]");
+    if (sectorButton) {
+      state.selectedInventorySector = sectorButton.dataset.selectSector;
+      state.inventoryView = "map";
+      state.filters.inventory.sector = sectorButton.dataset.selectSector;
+      renderInventory();
+      injectIcons($("#view-inventory"));
+      observeReveals();
       return;
     }
 
     const modalButton = event.target.closest("[data-open-modal]");
     if (modalButton) {
       if (modalButton.dataset.openModal === "problemModal") buildProblemForm();
-      if (modalButton.dataset.openModal === "assetModal") buildAssetForm();
+      if (modalButton.dataset.openModal === "assetModal") {
+        state.editingAssetId = "";
+        buildAssetForm();
+      }
       if (modalButton.dataset.openModal === "userModal") buildUserForm();
       if (modalButton.dataset.openModal === "exportModal") buildExportOptions();
       $(`#${modalButton.dataset.openModal}`).showModal();
@@ -1768,6 +2282,18 @@ function bindEvents() {
     const assetButton = event.target.closest("[data-open-asset]");
     if (assetButton) {
       openAssetDetail(assetButton.dataset.openAsset);
+      return;
+    }
+
+    const editAssetButton = event.target.closest("[data-edit-asset]");
+    if (editAssetButton) {
+      const asset = state.assets.find((item) => item.id === editAssetButton.dataset.editAsset);
+      if (!asset) return;
+      state.editingAssetId = asset.id;
+      buildAssetForm(asset);
+      const detailModal = $("#assetDetailModal");
+      if (detailModal?.open) detailModal.close();
+      $("#assetModal").showModal();
       return;
     }
 
@@ -1884,8 +2410,23 @@ function bindEvents() {
     const maintenanceButton = event.target.closest("[data-asset-maintenance]");
     if (maintenanceButton) {
       const asset = state.assets.find((item) => item.id === maintenanceButton.dataset.assetMaintenance);
-      asset.maintenance.unshift([new Date().toISOString().slice(0, 10), "Manutenção registrada pela equipe", "Pendente"]);
+      const maintenance = {
+        id: `MNT-${Date.now()}`,
+        assetId: asset.id,
+        assetName: asset.name,
+        problem: "Manutenção registrada pela equipe",
+        technician: role().name,
+        entryDate: new Date().toISOString().slice(0, 10),
+        exitDate: "",
+        status: "Em andamento",
+        solution: "",
+        cost: 0
+      };
+      state.assetMaintenances.unshift(maintenance);
+      asset.maintenance.unshift([maintenance.entryDate, maintenance.problem, maintenance.status]);
       asset.status = "Em manutenção";
+      asset.lastMaintenance = maintenance.entryDate;
+      addMovement(asset.id, "Manutenção", `${asset.name} enviado para manutenção.`);
       saveState();
       toast("Manutenção registrada", asset.name);
       openAssetDetail(asset.id);
@@ -1896,7 +2437,9 @@ function bindEvents() {
     const transferButton = event.target.closest("[data-asset-transfer]");
     if (transferButton) {
       const asset = state.assets.find((item) => item.id === transferButton.dataset.assetTransfer);
+      const from = asset.sector;
       asset.sector = asset.sector === "Gestão de TI" ? "Pré-impressão" : "Gestão de TI";
+      addMovement(asset.id, "Transferência", `${asset.name} movido de ${from} para ${asset.sector}.`, { fromSector: from, toSector: asset.sector });
       saveState();
       toast("Setor alterado", `${asset.name} transferido para ${asset.sector}.`);
       openAssetDetail(asset.id);
@@ -1909,6 +2452,7 @@ function bindEvents() {
       const asset = state.assets.find((item) => item.id === discardButton.dataset.assetDiscard);
       asset.status = "Descartado";
       asset.condition = "Inutilizável";
+      addMovement(asset.id, "Descarte", `${asset.name} marcado como descartado.`);
       saveState();
       toast("Recurso descartado", asset.name);
       openAssetDetail(asset.id);
@@ -1975,6 +2519,7 @@ function bindEvents() {
     if (asset) {
       asset.linkedProblems = unique([...(asset.linkedProblems || []), problem.id]);
       asset.tickets = unique([...(asset.tickets || []), problem.id]);
+      addMovement(asset.id, "Chamado vinculado", `${problem.id} vinculado ao recurso ${asset.name}.`, { problemId: problem.id });
     }
     saveState();
     $("#problemModal").close();
@@ -1987,7 +2532,33 @@ function bindEvents() {
   $("#assetForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const asset = formToAsset(event.currentTarget);
-    state.assets.unshift(asset);
+    if (state.editingAssetId) {
+      const current = state.assets.find((item) => item.id === state.editingAssetId);
+      if (current) {
+        const fromSector = current.sector;
+        const updated = normalizeAsset({
+          ...asset,
+          id: current.id,
+          maintenance: current.maintenance,
+          linkedProblems: current.linkedProblems,
+          tickets: current.tickets,
+          movementHistory: current.movementHistory,
+          loan: current.loan
+        });
+        state.assets = state.assets.map((item) => item.id === current.id ? updated : item);
+        addMovement(current.id, "Edição", `${updated.name} atualizado no inventário.`, { fromSector, toSector: updated.sector });
+        if (fromSector !== updated.sector) {
+          addMovement(current.id, "Transferência", `${updated.name} movido de ${fromSector} para ${updated.sector}.`, { fromSector, toSector: updated.sector });
+        }
+      }
+      state.editingAssetId = "";
+    } else {
+      state.assets.unshift(asset);
+      addMovement(asset.id, "Criação", `${asset.name} cadastrado no setor ${asset.sector}.`);
+      if (asset.status === "Emprestado") {
+        addMovement(asset.id, "Empréstimo", `${asset.name} marcado como emprestado para ${asset.user || "responsável não informado"}.`);
+      }
+    }
     saveState();
     $("#assetModal").close();
     event.currentTarget.reset();
@@ -2069,6 +2640,28 @@ function bindEvents() {
   });
 
   document.addEventListener("submit", (event) => {
+    const sectorForm = event.target.closest("#sectorForm");
+    if (sectorForm) {
+      event.preventDefault();
+      const data = new FormData(sectorForm);
+      addInventorySector({
+        name: data.get("name"),
+        owner: data.get("owner"),
+        location: data.get("location"),
+        description: data.get("description")
+      });
+      sectorForm.reset();
+      return;
+    }
+
+    const maintenanceForm = event.target.closest("#maintenanceForm");
+    if (maintenanceForm) {
+      event.preventDefault();
+      registerMaintenanceFromForm(maintenanceForm);
+      maintenanceForm.reset();
+      return;
+    }
+
     const categoryForm = event.target.closest("#categoryForm");
     if (categoryForm) {
       event.preventDefault();

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>SolveDesk Pro</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=20260617-inventory-map">
   </head>
   <body class="auth-locked">
     <div class="boot-screen" id="bootScreen" aria-hidden="true">
@@ -35,18 +35,83 @@
         <form class="login-form" id="loginForm" data-mode="signin" autocomplete="off">
           <label class="form-group">
             <span>E-mail</span>
-            <input id="loginEmail" name="email" type="email" autocomplete="email" required>
+            <input id="loginEmail" name="email" type="email" autocomplete="email" placeholder="seu.email@empresa.com" required>
           </label>
           <label class="form-group">
             <span>Senha</span>
-            <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="Digite sua senha" required>
           </label>
           <p class="login-error" id="loginError" role="alert"></p>
           <button class="primary-btn ripple-btn" id="authSubmitBtn" type="submit">Entrar</button>
+          <div class="login-assurance">
+            <span>Acesso protegido</span>
+            <span>Dados sincronizados</span>
+          </div>
+          <div class="login-note">
+            Apos o login, suas informacoes ficam disponiveis com seguranca nos navegadores autorizados.
+          </div>
         </form>
       </div>
-      <div class="login-orbit" aria-hidden="true">
-        <span></span><span></span><span></span><span></span>
+      <div class="login-preview" aria-hidden="true">
+        <div class="preview-shell">
+          <aside class="preview-nav">
+            <strong>SolveDesk Pro</strong>
+            <span class="active">Visao geral</span>
+            <span>Chamados</span>
+            <span>Problemas</span>
+            <span>Mudancas</span>
+            <span>Ativos</span>
+            <span>Usuarios</span>
+            <span>Relatorios</span>
+          </aside>
+          <section class="preview-dashboard">
+            <header class="preview-topbar">
+              <div class="preview-search">Buscar...</div>
+              <span class="preview-dot"></span>
+              <span class="preview-avatar">AB</span>
+            </header>
+            <div class="preview-title">
+              <h2>Visao geral</h2>
+              <p>Acompanhe o desempenho e os principais indicadores do suporte.</p>
+            </div>
+            <div class="preview-kpis">
+              <div class="preview-card"><small>Chamados abertos</small><strong>128</strong><span>+12%</span></div>
+              <div class="preview-card"><small>Em atendimento</small><strong>45</strong><span>+8%</span></div>
+              <div class="preview-card"><small>Resolvidos</small><strong>312</strong><span>+18%</span></div>
+              <div class="preview-card"><small>SLA</small><strong>92%</strong><span>+5%</span></div>
+            </div>
+            <div class="preview-grid">
+              <div class="preview-widget preview-chart">
+                <small>Chamados por status</small>
+                <svg viewBox="0 0 360 160" role="img" aria-label="Grafico de chamados">
+                  <path d="M14 132 C54 72 76 122 112 82 S174 42 210 92 S270 24 342 54" />
+                  <path d="M14 146 C54 118 82 136 118 112 S178 70 212 98 S274 128 342 88" />
+                  <path d="M14 150 C54 142 84 124 120 134 S180 102 216 116 S276 150 342 130" />
+                </svg>
+              </div>
+              <div class="preview-widget preview-donut">
+                <div class="donut-mini"><strong>128</strong><small>Total</small></div>
+                <ul>
+                  <li><i></i>Infraestrutura 38%</li>
+                  <li><i></i>Software 27%</li>
+                  <li><i></i>Acesso 18%</li>
+                </ul>
+              </div>
+              <div class="preview-widget preview-bars">
+                <small>Chamados por prioridade</small>
+                <span style="--w: 72%"></span>
+                <span style="--w: 92%"></span>
+                <span style="--w: 64%"></span>
+              </div>
+              <div class="preview-widget preview-activity">
+                <small>Atividades recentes</small>
+                <p>Chamado #CH1234 atualizado</p>
+                <p>Novo chamado #CH1235 criado</p>
+                <p>Problema #PRB567 em analise</p>
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
     </section>
 
@@ -67,7 +132,6 @@
           <button class="nav-item" type="button" data-route="problems"><span data-icon="ticket"></span><b>Problemas</b></button>
           <button class="nav-item" type="button" data-route="knowledge"><span data-icon="book"></span><b>Base</b></button>
           <button class="nav-item" type="button" data-route="inventory"><span data-icon="monitor"></span><b>Inventário</b></button>
-          <button class="nav-item" type="button" data-route="insights"><span data-icon="spark"></span><b>Insights</b></button>
           <button class="nav-item" type="button" data-route="reports"><span data-icon="chart"></span><b>Relatórios</b></button>
           <button class="nav-item" type="button" data-route="users"><span data-icon="users"></span><b>Usuários</b></button>
           <button class="nav-item" type="button" data-route="settings"><span data-icon="settings"></span><b>Ajustes</b></button>
@@ -101,7 +165,6 @@
           <section class="view" id="view-problems" data-view="problems"></section>
           <section class="view" id="view-knowledge" data-view="knowledge"></section>
           <section class="view" id="view-inventory" data-view="inventory"></section>
-          <section class="view" id="view-insights" data-view="insights"></section>
           <section class="view" id="view-reports" data-view="reports"></section>
           <section class="view" id="view-users" data-view="users"></section>
           <section class="view" id="view-settings" data-view="settings"></section>
@@ -241,8 +304,8 @@
     <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="true"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="data.js?v=20260617-supabase-url-exact"></script>
-    <script src="xlsx-export.js?v=20260617-supabase-url-exact"></script>
-    <script src="app.js?v=20260617-supabase-url-exact"></script>
+    <script src="data.js?v=20260617-inventory-map"></script>
+    <script src="xlsx-export.js?v=20260617-inventory-map"></script>
+    <script src="app.js?v=20260617-inventory-map"></script>
   </body>
 </html>
